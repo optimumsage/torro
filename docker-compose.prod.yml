@@ -25,26 +25,8 @@ services:
       timeout: 5s
       retries: 3
 
-  frontend:
-    build: ./frontend
-    expose:
-      - "5173"
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5173"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.frontend.rule=Host(`${DOMAIN}`)
-      - traefik.http.routers.frontend.entrypoints=websecure
-      - traefik.http.routers.frontend.tls.certresolver=le
-      - traefik.http.services.frontend.loadbalancer.server.port=5173
-
-  backend:
-    build: ./backend
+  torro:
+    image: ${DOCKER_REPO}/torro:${TORRO_VERSION:-latest}
     expose:
       - "3000"
     environment:
@@ -63,13 +45,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 15s
     labels:
       - traefik.enable=true
-      - traefik.http.routers.backend.rule=Host(`${DOMAIN}`) && PathPrefix(`/api`)
-      - traefik.http.routers.backend.entrypoints=websecure
-      - traefik.http.routers.backend.tls.certresolver=le
-      - traefik.http.services.backend.loadbalancer.server.port=3000
+      - traefik.http.routers.torro.rule=Host(`${DOMAIN}`)
+      - traefik.http.routers.torro.entrypoints=websecure
+      - traefik.http.routers.torro.tls.certresolver=le
+      - traefik.http.services.torro.loadbalancer.server.port=3000
 
   qbittorrent:
     image: linuxserver/qbittorrent:latest

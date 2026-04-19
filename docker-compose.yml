@@ -8,9 +8,7 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/ssl:/etc/nginx/ssl:ro
     depends_on:
-      frontend:
-        condition: service_healthy
-      backend:
+      torro:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
@@ -19,20 +17,10 @@ services:
       timeout: 5s
       retries: 3
 
-  frontend:
-    build: ./frontend
-    expose:
-      - "5173"
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5173"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
-
-  backend:
-    build: ./backend
+  torro:
+    build:
+      context: .
+      dockerfile: Dockerfile
     expose:
       - "3000"
     environment:
@@ -51,7 +39,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 15s
 
   qbittorrent:
     image: linuxserver/qbittorrent:latest

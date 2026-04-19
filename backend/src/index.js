@@ -2,6 +2,8 @@ require('dotenv').config({ path: '/run/config/.env' });
 const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
+const path = require('path');
+const fs = require('fs');
 const authRoutes = require('./routes/auth');
 const torrentRoutes = require('./routes/torrents');
 const fileRoutes = require('./routes/files');
@@ -31,5 +33,12 @@ app.use('/api/torrents', verifyToken, torrentRoutes);
 app.use('/api/files', verifyToken, fileRoutes);
 app.use('/api/downloads', verifyToken, downloadRoutes);
 app.use('/api/stream', verifyToken, streamRoutes);
+
+// Serve frontend static files when built into the image
+const publicDir = path.join(__dirname, '../public');
+if (fs.existsSync(publicDir)) {
+  app.use(express.static(publicDir));
+  app.get('*', (req, res) => res.sendFile(path.join(publicDir, 'index.html')));
+}
 
 app.listen(3000, () => console.log('Backend running on :3000'));

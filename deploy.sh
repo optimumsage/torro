@@ -54,7 +54,6 @@ install_docker_compose() {
     return
   fi
   info "Installing Docker Compose plugin..."
-  # Add Docker's official apt repo if not already present (required for docker-compose-plugin)
   if ! apt-cache show docker-compose-plugin &>/dev/null 2>&1; then
     info "Adding Docker apt repository..."
     sudo apt-get install -y ca-certificates curl gnupg
@@ -84,7 +83,7 @@ install_python_bcrypt() {
 
 # ── User inputs ───────────────────────────────────────────────────────────────
 SKIP_ENV=false
-APP_USERNAME="" APP_PASSWORD="" DOMAIN="" ACME_EMAIL=""
+APP_USERNAME="" APP_PASSWORD="" DOMAIN="" ACME_EMAIL="" DOCKER_REPO="" TORRO_VERSION=""
 
 gather_inputs() {
   section "Configuration"
@@ -121,6 +120,12 @@ gather_inputs() {
 
   read -rp "  Let's Encrypt email: " ACME_EMAIL
   if [[ -z "$ACME_EMAIL" ]]; then die "Email cannot be empty."; fi
+
+  read -rp "  DockerHub username/org (e.g. johndoe): " DOCKER_REPO
+  if [[ -z "$DOCKER_REPO" ]]; then die "DockerHub username cannot be empty."; fi
+
+  read -rp "  Image version to deploy [latest]: " TORRO_VERSION
+  TORRO_VERSION="${TORRO_VERSION:-latest}"
 }
 
 # ── Write .env ────────────────────────────────────────────────────────────────
@@ -138,7 +143,6 @@ write_env() {
   jwt_secret=$(openssl rand -hex 32)
   qbit_password=$(openssl rand -hex 12)
 
-  # Pass password via stdin to avoid shell-escaping issues with special chars
   app_hash=$(printf '%s' "$APP_PASSWORD" | python3 -c "
 import bcrypt, sys
 pw = sys.stdin.buffer.read()
@@ -157,6 +161,9 @@ QBIT_PASSWORD=${qbit_password}
 ALLOWED_ORIGIN=https://${DOMAIN}
 DOMAIN=${DOMAIN}
 ACME_EMAIL=${ACME_EMAIL}
+
+DOCKER_REPO=${DOCKER_REPO}
+TORRO_VERSION=${TORRO_VERSION}
 EOF
 
   chmod 600 .env
@@ -182,7 +189,6 @@ configure_qbittorrent() {
     [[ $elapsed -gt 150 ]] && die "qBittorrent did not become healthy after 150s. Check logs: docker compose -f $COMPOSE_FILE logs qbittorrent"
   done
 
-  # Test if already configured with our password (idempotent on re-runs)
   local result
   result=$($SUDO docker compose -f "$COMPOSE_FILE" exec -T qbittorrent \
     curl -s --max-time 5 \
@@ -194,7 +200,6 @@ configure_qbittorrent() {
     return
   fi
 
-  # First run: read the temporary password printed to container logs
   local temp_pass
   temp_pass=$($SUDO docker compose -f "$COMPOSE_FILE" logs qbittorrent 2>&1 | \
     grep -i "temporary password" | tail -1 | sed 's/.*: //' | tr -d '[:space:]\r\n')
@@ -202,7 +207,6 @@ configure_qbittorrent() {
   if [[ -z "$temp_pass" ]]; then die "Could not find qBittorrent temporary password in logs."; fi
 
   info "Setting permanent qBittorrent password..."
-  # Use a single exec call so the cookie file persists between the two requests
   $SUDO docker compose -f "$COMPOSE_FILE" exec -T qbittorrent sh -c "
     curl -s -c /tmp/qc -b /tmp/qc \
       --data 'username=admin&password=${temp_pass}' \
@@ -233,15 +237,18 @@ main() {
   write_env
   setup_traefik
 
+  section "Pulling images"
+  $SUDO docker compose -f "$COMPOSE_FILE" pull
+  success "Images pulled"
+
   section "Starting services"
-  $SUDO docker compose -f "$COMPOSE_FILE" up -d --build
+  $SUDO docker compose -f "$COMPOSE_FILE" up -d
   success "All containers started"
 
   configure_qbittorrent
 
-  local domain
+  local domain username
   domain=$(grep '^DOMAIN=' .env | cut -d= -f2-)
-  local username
   username=$(grep '^APP_USERNAME=' .env | cut -d= -f2-)
 
   section "Done"
@@ -251,10 +258,13 @@ main() {
   echo -e "  Username: ${BOLD}${username}${NC}"
   echo -e "  Password: (the one you entered)"
   echo
-  echo -e "  Useful commands:"
+  echo -e "  To upgrade to a new version:"
+  echo -e "    Edit TORRO_VERSION in .env, then:"
+  echo -e "    $SUDO docker compose -f $COMPOSE_FILE pull && $SUDO docker compose -f $COMPOSE_FILE up -d"
+  echo
+  echo -e "  Other commands:"
   echo -e "    $SUDO docker compose -f $COMPOSE_FILE logs -f"
   echo -e "    $SUDO docker compose -f $COMPOSE_FILE ps"
-  echo -e "    $SUDO docker compose -f $COMPOSE_FILE restart backend"
   echo -e "    $SUDO docker compose -f $COMPOSE_FILE down"
   echo
 }
