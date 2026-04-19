@@ -200,21 +200,56 @@ EOF
 # ── Traefik ───────────────────────────────────────────────────────────────────
 setup_traefik() {
   mkdir -p traefik
-  touch traefik/acme.json
+  # Always wipe acme.json — stale LE account data from a previous install causes
+  # "accountDoesNotExist" errors and cert issuance fails silently.
+  printf '' > traefik/acme.json
   chmod 600 traefik/acme.json
   success "traefik/acme.json ready (chmod 600)"
 }
 
 # ── qBittorrent first-run ─────────────────────────────────────────────────────
-configure_qbittorrent() {
-  info "Waiting for qBittorrent to become healthy..."
+wait_qbit_healthy() {
   local elapsed=0
   until $SUDO docker compose -f "$COMPOSE_FILE" ps qbittorrent 2>/dev/null | grep -q "(healthy)"; do
     sleep 5
     elapsed=$((elapsed + 5))
     [[ $elapsed -gt 150 ]] && die "qBittorrent did not become healthy after 150s. Check: docker compose -f $COMPOSE_FILE logs qbittorrent"
   done
+}
 
+set_qbit_password() {
+  local temp_pass="$1"
+  local login_result verify
+
+  login_result=$($SUDO docker compose -f "$COMPOSE_FILE" exec -T qbittorrent \
+    curl -s -c /tmp/qc -b /tmp/qc \
+      --data "username=admin&password=${temp_pass}" \
+      http://localhost:8080/api/v2/auth/login 2>/dev/null || echo "fail")
+
+  if [[ "$login_result" != "Ok." ]]; then
+    die "Could not log into qBittorrent with temporary password (got: $login_result)."
+  fi
+
+  $SUDO docker compose -f "$COMPOSE_FILE" exec -T qbittorrent \
+    curl -s -c /tmp/qc -b /tmp/qc \
+      --data "json={\"web_ui_password\":\"${QBIT_PASSWORD}\",\"web_ui_max_auth_fail_count\":0}" \
+      http://localhost:8080/api/v2/app/setPreferences 2>/dev/null
+  $SUDO docker compose -f "$COMPOSE_FILE" exec -T qbittorrent rm -f /tmp/qc
+
+  verify=$($SUDO docker compose -f "$COMPOSE_FILE" exec -T qbittorrent \
+    curl -s --data "username=admin&password=${QBIT_PASSWORD}" \
+    http://localhost:8080/api/v2/auth/login 2>/dev/null || echo "fail")
+
+  if [[ "$verify" != "Ok." ]]; then
+    die "qBittorrent password verification failed after setting it."
+  fi
+}
+
+configure_qbittorrent() {
+  info "Waiting for qBittorrent to become healthy..."
+  wait_qbit_healthy
+
+  # Happy path: password already matches (idempotent re-run)
   local result
   result=$($SUDO docker compose -f "$COMPOSE_FILE" exec -T qbittorrent \
     curl -s --max-time 5 \
@@ -226,39 +261,44 @@ configure_qbittorrent() {
     return
   fi
 
+  # Try the temporary password from logs (fresh first-run)
   local temp_pass
   temp_pass=$($SUDO docker compose -f "$COMPOSE_FILE" logs qbittorrent 2>&1 | \
     grep -i "temporary password" | tail -1 | sed 's/.*: //' | tr -d '[:space:]\r\n')
 
-  if [[ -z "$temp_pass" ]]; then die "Could not find qBittorrent temporary password in logs."; fi
+  if [[ -n "$temp_pass" ]]; then
+    info "Setting permanent qBittorrent password via temporary password..."
+    set_qbit_password "$temp_pass"
+    success "qBittorrent configured"
+    return
+  fi
+
+  # Reinstall case: qBit has an existing config with an unknown old password.
+  # Clear the stored password from its config so it generates a new temp password.
+  info "Resetting qBittorrent password (existing config detected)..."
+  $SUDO docker compose -f "$COMPOSE_FILE" stop qbittorrent
+
+  local project_name
+  project_name=$($SUDO docker compose -f "$COMPOSE_FILE" config --format json 2>/dev/null | \
+    grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4 || echo "torro")
+
+  $SUDO docker run --rm \
+    -v "${project_name}_qbit_config:/config" \
+    alpine sh -c "sed -i '/WebUI.Password_PBKDF2/d' /config/qBittorrent/qBittorrent.conf 2>/dev/null || true"
+
+  $SUDO docker compose -f "$COMPOSE_FILE" start qbittorrent
+  info "Waiting for qBittorrent to become healthy again..."
+  wait_qbit_healthy
+
+  temp_pass=$($SUDO docker compose -f "$COMPOSE_FILE" logs qbittorrent 2>&1 | \
+    grep -i "temporary password" | tail -1 | sed 's/.*: //' | tr -d '[:space:]\r\n')
+
+  if [[ -z "$temp_pass" ]]; then
+    die "Could not get a temporary password from qBittorrent after config reset. Check: docker compose -f $COMPOSE_FILE logs qbittorrent"
+  fi
 
   info "Setting permanent qBittorrent password..."
-  local login_result pref_result
-  login_result=$($SUDO docker compose -f "$COMPOSE_FILE" exec -T qbittorrent \
-    curl -s -c /tmp/qc -b /tmp/qc \
-      --data "username=admin&password=${temp_pass}" \
-      http://localhost:8080/api/v2/auth/login 2>/dev/null || echo "fail")
-
-  if [[ "$login_result" != "Ok." ]]; then
-    die "Could not log into qBittorrent with temporary password (got: $login_result). Check logs: docker compose -f $COMPOSE_FILE logs qbittorrent"
-  fi
-
-  pref_result=$($SUDO docker compose -f "$COMPOSE_FILE" exec -T qbittorrent \
-    curl -s -c /tmp/qc -b /tmp/qc \
-      --data "json={\"web_ui_password\":\"${QBIT_PASSWORD}\",\"web_ui_max_auth_fail_count\":0}" \
-      http://localhost:8080/api/v2/app/setPreferences 2>/dev/null || echo "fail")
-  $SUDO docker compose -f "$COMPOSE_FILE" exec -T qbittorrent rm -f /tmp/qc
-
-  # Verify the new password actually works
-  local verify
-  verify=$($SUDO docker compose -f "$COMPOSE_FILE" exec -T qbittorrent \
-    curl -s --data "username=admin&password=${QBIT_PASSWORD}" \
-    http://localhost:8080/api/v2/auth/login 2>/dev/null || echo "fail")
-
-  if [[ "$verify" != "Ok." ]]; then
-    die "qBittorrent password was not set correctly (verification failed). Check logs: docker compose -f $COMPOSE_FILE logs qbittorrent"
-  fi
-
+  set_qbit_password "$temp_pass"
   success "qBittorrent configured"
 }
 
