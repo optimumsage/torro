@@ -21,12 +21,14 @@ router.get('/', async (req, res) => {
           name: t.name,
           hash: t.hash,
           size: t.size,
-          files: files.map(f => ({
-            name: path.basename(f.name),
-            path: f.name,
-            size: f.size,
-            isVideo: VIDEO_EXTS.has(path.extname(f.name).toLowerCase()),
-          })),
+          files: files
+            .filter(f => f.priority !== 0)
+            .map(f => ({
+              name: path.basename(f.name),
+              path: f.name,
+              size: f.size,
+              isVideo: VIDEO_EXTS.has(path.extname(f.name).toLowerCase()),
+            })),
         };
       } catch {
         return { name: t.name, hash: t.hash, size: t.size, files: [] };

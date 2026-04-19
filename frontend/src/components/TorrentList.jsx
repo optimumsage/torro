@@ -2,14 +2,14 @@ import { useEffect, useState } from 'react';
 import api from '../api/client';
 
 const STATE_LABELS = {
-  downloading: 'Downloading', pausedDL: 'Paused',
+  downloading: 'Downloading', pausedDL: 'Paused', stoppedDL: 'Stopped',
   stalledDL: 'Stalled', checkingDL: 'Checking', error: 'Error',
   queuedDL: 'Queued', metaDL: 'Fetching metadata',
 };
 
 const COMPLETED_STATES = new Set([
   'uploading', 'stalledUP', 'forcedUP', 'queuedUP',
-  'checkingUP', 'pausedUP', 'stoppedUP',
+  'checkingUP', 'pausedUP', 'stoppedUP', 'stopped',
 ]);
 
 function formatBytes(bytes) {
@@ -43,8 +43,8 @@ export default function TorrentList() {
   };
 
   const togglePause = async (torrent) => {
-    const isPaused = torrent.state.includes('paused') || torrent.state.includes('Paused');
-    if (isPaused) await api.post(`/torrents/${torrent.hash}/resume`);
+    const isStopped = torrent.state.includes('paused') || torrent.state.includes('stopped');
+    if (isStopped) await api.post(`/torrents/${torrent.hash}/resume`);
     else await api.post(`/torrents/${torrent.hash}/pause`);
   };
 
@@ -72,7 +72,7 @@ export default function TorrentList() {
           </div>
           <div className="flex gap-2 pt-1">
             <button onClick={() => togglePause(t)} className="text-xs px-3 py-1 bg-gray-700 hover:bg-gray-600 text-white rounded">
-              {t.state.includes('paused') ? 'Resume' : 'Pause'}
+              {t.state.includes('paused') || t.state.includes('stopped') ? 'Resume' : 'Pause'}
             </button>
             <button onClick={() => removeTorrent(t.hash)} className="text-xs px-3 py-1 bg-gray-700 hover:bg-gray-600 text-white rounded">
               Remove

@@ -46,7 +46,7 @@ async function addMagnetPaused(magnetUrl, savePath = '/downloads') {
   await ensureAuth(() =>
     axios.post(
       `${BASE}/api/v2/torrents/add`,
-      `urls=${encodeURIComponent(magnetUrl)}&savepath=${savePath}&sequentialDownload=true&paused=true&ratioLimit=0&seedingTimeLimit=0`,
+      `urls=${encodeURIComponent(magnetUrl)}&savepath=${savePath}&sequentialDownload=true&paused=true&stopped=true&ratioLimit=0&seedingTimeLimit=0`,
       { headers: { ...headers(), 'Content-Type': 'application/x-www-form-urlencoded' } }
     )
   );
@@ -70,6 +70,7 @@ async function addTorrentFilePaused(fileBuffer, fileName, savePath = '/downloads
   form.append('savepath', savePath);
   form.append('sequentialDownload', 'true');
   form.append('paused', 'true');
+  form.append('stopped', 'true');
   form.append('ratioLimit', '0');
   form.append('seedingTimeLimit', '0');
 
@@ -117,14 +118,14 @@ async function deleteTorrent(hash, deleteFiles = false) {
 
 async function pauseTorrent(hash) {
   return ensureAuth(() =>
-    axios.post(`${BASE}/api/v2/torrents/pause`, `hashes=${hash}`,
+    axios.post(`${BASE}/api/v2/torrents/stop`, `hashes=${hash}`,
       { headers: { ...headers(), 'Content-Type': 'application/x-www-form-urlencoded' } })
   );
 }
 
 async function resumeTorrent(hash) {
   return ensureAuth(() =>
-    axios.post(`${BASE}/api/v2/torrents/resume`, `hashes=${hash}`,
+    axios.post(`${BASE}/api/v2/torrents/start`, `hashes=${hash}`,
       { headers: { ...headers(), 'Content-Type': 'application/x-www-form-urlencoded' } })
   );
 }
