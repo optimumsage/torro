@@ -46,7 +46,7 @@ export default function AddTorrent({ onAdded }) {
     const form = new FormData();
     form.append('torrent', file);
     try {
-      const res = await api.post('/torrents/file', form, { headers: { 'Content-Type': 'multipart/form-data' } });
+      const res = await api.post('/torrents/file', form);
       openSelector(res.data.hash, res.data.files);
     } catch {
       setError('Failed to upload torrent file');
