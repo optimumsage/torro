@@ -105,17 +105,22 @@ gather_inputs() {
 
   while true; do
     read -rsp "  App password: " APP_PASSWORD; echo
-    [[ -z "$APP_PASSWORD" ]] && { warn "Password cannot be empty."; continue; }
+    if [[ -z "$APP_PASSWORD" ]]; then
+      warn "Password cannot be empty."
+      continue
+    fi
     read -rsp "  Confirm password: " _confirm; echo
-    [[ "$APP_PASSWORD" == "$_confirm" ]] && break
+    if [[ "$APP_PASSWORD" == "$_confirm" ]]; then
+      break
+    fi
     warn "Passwords do not match — try again."
   done
 
   read -rp "  Domain (e.g. torro.example.com): " DOMAIN
-  [[ -z "$DOMAIN" ]] && die "Domain cannot be empty."
+  if [[ -z "$DOMAIN" ]]; then die "Domain cannot be empty."; fi
 
   read -rp "  Let's Encrypt email: " ACME_EMAIL
-  [[ -z "$ACME_EMAIL" ]] && die "Email cannot be empty."
+  if [[ -z "$ACME_EMAIL" ]]; then die "Email cannot be empty."; fi
 }
 
 # ── Write .env ────────────────────────────────────────────────────────────────
@@ -162,13 +167,9 @@ EOF
 # ── Traefik ───────────────────────────────────────────────────────────────────
 setup_traefik() {
   mkdir -p traefik
-  if [[ ! -f traefik/acme.json ]]; then
-    touch traefik/acme.json
-    chmod 600 traefik/acme.json
-    success "traefik/acme.json created"
-  else
-    success "traefik/acme.json preserved (existing certs kept)"
-  fi
+  touch traefik/acme.json   # no-op if already exists
+  chmod 600 traefik/acme.json
+  success "traefik/acme.json ready (chmod 600)"
 }
 
 # ── qBittorrent first-run configuration ───────────────────────────────────────
@@ -198,7 +199,7 @@ configure_qbittorrent() {
   temp_pass=$($SUDO docker compose -f "$COMPOSE_FILE" logs qbittorrent 2>&1 | \
     grep -i "temporary password" | tail -1 | sed 's/.*: //' | tr -d '[:space:]\r\n')
 
-  [[ -z "$temp_pass" ]] && die "Could not find qBittorrent temporary password in logs."
+  if [[ -z "$temp_pass" ]]; then die "Could not find qBittorrent temporary password in logs."; fi
 
   info "Setting permanent qBittorrent password..."
   # Use a single exec call so the cookie file persists between the two requests

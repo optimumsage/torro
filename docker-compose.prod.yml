@@ -66,15 +66,10 @@ services:
       start_period: 10s
     labels:
       - traefik.enable=true
-      # Higher priority so /api routes match before the catch-all frontend rule
-      - traefik.http.routers.backend.priority=10
       - traefik.http.routers.backend.rule=Host(`${DOMAIN}`) && PathPrefix(`/api`)
       - traefik.http.routers.backend.entrypoints=websecure
       - traefik.http.routers.backend.tls.certresolver=le
       - traefik.http.services.backend.loadbalancer.server.port=3000
-      # Disable response buffering for SSE
-      - traefik.http.middlewares.no-buffer.buffering.maxResponseBodyBytes=0
-      - traefik.http.routers.backend.middlewares=no-buffer
 
   qbittorrent:
     image: linuxserver/qbittorrent:latest

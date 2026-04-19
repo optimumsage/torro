@@ -2,6 +2,7 @@
 node_modules/
 frontend/dist/
 nginx/ssl/
+traefik/acme.json
 .DS_Store
 Thumbs.db
 npm-debug.log*
