@@ -1,11 +1,23 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import api from '../api/client';
+import { formatBytes } from '../utils/format';
 import AddTorrent from '../components/AddTorrent';
 import TorrentList from '../components/TorrentList';
 import FileManager from '../components/FileManager';
 
 export default function Dashboard() {
   const [fileRefreshKey, setFileRefreshKey] = useState(0);
+  const [disk, setDisk] = useState(null);
+
+  useEffect(() => {
+    const es = new EventSource('/api/torrents/progress/stream', { withCredentials: true });
+    es.onmessage = e => {
+      const data = JSON.parse(e.data);
+      if (data.disk) setDisk(data.disk);
+    };
+    es.onerror = () => es.close();
+    return () => es.close();
+  }, []);
 
   const logout = async () => {
     await api.post('/auth/logout');
@@ -26,8 +38,17 @@ export default function Dashboard() {
         <FileManager refreshKey={fileRefreshKey} />
       </main>
       <footer className="border-t border-gray-800 px-6 py-2 flex items-center justify-between text-xs text-gray-600">
-        <span>Torro</span>
-        <span>v{version}</span>
+        <div className="flex gap-4">
+          <span>Torro v{version}</span>
+          {disk && (
+            <span>
+              Disk: <span className="text-gray-400">{formatBytes(disk.available)} available</span>
+              {' / '}
+              <span className="text-gray-400">{formatBytes(disk.total)} total</span>
+            </span>
+          )}
+        </div>
+        <span>&copy; {new Date().getFullYear()} Optimum Sage</span>
       </footer>
     </div>
   );

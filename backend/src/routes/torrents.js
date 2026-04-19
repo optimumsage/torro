@@ -1,5 +1,6 @@
 const router = require('express').Router();
 const multer = require('multer');
+const fs = require('fs');
 const qbit = require('../services/qbit');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -108,7 +109,17 @@ router.get('/progress/stream', (req, res) => {
   const interval = setInterval(async () => {
     try {
       const torrents = await qbit.getTorrents();
-      res.write(`data: ${JSON.stringify(torrents)}\n\n`);
+      let disk = null;
+      try {
+        const stats = await fs.promises.statfs(process.env.DOWNLOADS_PATH || '/downloads');
+        disk = {
+          total: Number(stats.bsize) * Number(stats.blocks),
+          available: Number(stats.bsize) * Number(stats.bavail)
+        };
+      } catch (e) {
+        console.error('Error getting disk space:', e);
+      }
+      res.write(`data: ${JSON.stringify({ torrents, disk })}\n\n`);
     } catch {
       // keep alive
     }

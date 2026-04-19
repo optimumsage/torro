@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import api from '../api/client';
+import { formatBytes } from '../utils/format';
 
 const STATE_LABELS = {
   downloading: 'Downloading', pausedDL: 'Paused', stoppedDL: 'Stopped',
@@ -12,21 +13,16 @@ const COMPLETED_STATES = new Set([
   'checkingUP', 'pausedUP', 'stoppedUP', 'stopped',
 ]);
 
-function formatBytes(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
-  return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
-}
-
 export default function TorrentList() {
   const [torrents, setTorrents] = useState([]);
 
   useEffect(() => {
     const es = new EventSource('/api/torrents/progress/stream', { withCredentials: true });
     es.onmessage = e => {
-      const all = JSON.parse(e.data);
-      setTorrents(all.filter(t => !COMPLETED_STATES.has(t.state) && t.progress < 1));
+      const { torrents: all } = JSON.parse(e.data);
+      if (all) {
+        setTorrents(all.filter(t => !COMPLETED_STATES.has(t.state) && t.progress < 1));
+      }
     };
     es.onerror = () => es.close();
     return () => es.close();
