@@ -47,6 +47,24 @@ Open **https://localhost:8443** (accept the self-signed cert warning).
 
 ## Production (EC2 / any Linux server)
 
+### One-line install (no git clone needed)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/optimumsage/torro/main/install.sh | bash
+```
+
+Or download and inspect first:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/optimumsage/torro/main/install.sh -o install.sh
+less install.sh
+bash install.sh
+```
+
+Installs to `~/torro` by default. Override with `TORRO_DIR=/opt/torro bash install.sh`.
+
+### Install from cloned repo
+
 **Prerequisites:** Ubuntu VM, a domain pointing at the server, ports 80 and 443 open.
 
 Production uses prebuilt images from DockerHub via `docker-compose.prod.yml`. A single script handles everything.
