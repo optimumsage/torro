@@ -14,12 +14,12 @@ router.get('/', async (req, res) => {
   }
 });
 
-// Add magnet — adds paused, returns hash for file selection
+// Add magnet — adds active (to fetch metadata), returns hash for file selection
 router.post('/magnet', async (req, res) => {
   const { magnetUrl } = req.body;
   if (!magnetUrl?.startsWith('magnet:')) return res.status(400).json({ error: 'Invalid magnet link' });
   try {
-    const hash = await qbit.addMagnetPaused(magnetUrl);
+    const hash = await qbit.addMagnet(magnetUrl);
     res.json({ hash });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -50,6 +50,9 @@ router.post('/file', upload.single('torrent'), async (req, res) => {
 router.get('/:hash/files', async (req, res) => {
   try {
     const files = await qbit.getTorrentFiles(req.params.hash);
+    if (files.length > 0 && req.query.autoPause === 'true') {
+      await qbit.pauseTorrent(req.params.hash);
+    }
     res.json(files.map((f, i) => ({ ...f, index: i })));
   } catch (e) {
     res.status(500).json({ error: e.message });

@@ -1,11 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import api from '../api/client';
-
-function formatBytes(bytes) {
-  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
-  return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
-}
+import { formatBytes } from '../utils/format';
 
 // Build a tree from flat qBit file list
 function buildTree(files) {
@@ -96,7 +91,7 @@ export default function TorrentFileSelector({ hash, initialFiles, onStart, onCan
     if (!polling) return;
     const interval = setInterval(async () => {
       try {
-        const res = await api.get(`/torrents/${hash}/files`);
+        const res = await api.get(`/torrents/${hash}/files?autoPause=true`);
         if (res.data.length > 0) {
           setFiles(res.data);
           setPolling(false);

@@ -38,15 +38,15 @@ async function getTorrents() {
   });
 }
 
-// Add magnet in paused state and return the new torrent hash
-async function addMagnetPaused(magnetUrl, savePath = '/downloads') {
+// Add magnet in active state to fetch metadata and return the new torrent hash
+async function addMagnet(magnetUrl, savePath = '/downloads') {
   const before = await getTorrents();
   const beforeHashes = new Set(before.map(t => t.hash));
 
   await ensureAuth(() =>
     axios.post(
       `${BASE}/api/v2/torrents/add`,
-      `urls=${encodeURIComponent(magnetUrl)}&savepath=${savePath}&sequentialDownload=true&paused=true&stopped=true&ratioLimit=0&seedingTimeLimit=0`,
+      `urls=${encodeURIComponent(magnetUrl)}&savepath=${savePath}&sequentialDownload=true&paused=false&stopped=false&ratioLimit=0&seedingTimeLimit=0`,
       { headers: { ...headers(), 'Content-Type': 'application/x-www-form-urlencoded' } }
     )
   );
@@ -131,7 +131,7 @@ async function resumeTorrent(hash) {
 }
 
 module.exports = {
-  addMagnetPaused, addTorrentFilePaused,
+  addMagnet, addTorrentFilePaused,
   getTorrents, getTorrentFiles,
   setFilePriorities,
   deleteTorrent, pauseTorrent, resumeTorrent,
