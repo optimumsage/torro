@@ -54,7 +54,19 @@ install_docker_compose() {
     return
   fi
   info "Installing Docker Compose plugin..."
-  sudo apt-get update -qq
+  # Add Docker's official apt repo if not already present (required for docker-compose-plugin)
+  if ! apt-cache show docker-compose-plugin &>/dev/null 2>&1; then
+    info "Adding Docker apt repository..."
+    sudo apt-get install -y ca-certificates curl gnupg
+    sudo install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+      | sudo gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
+    sudo chmod a+r /etc/apt/keyrings/docker.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+      | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+    sudo apt-get update -qq
+  fi
   sudo apt-get install -y docker-compose-plugin
   success "Docker Compose plugin installed"
 }
@@ -118,8 +130,8 @@ write_env() {
   info "Generating secrets..."
 
   local jwt_secret qbit_password app_hash
-  jwt_secret=$(openssl rand -base64 48)
-  qbit_password=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 24)
+  jwt_secret=$(openssl rand -hex 32)
+  qbit_password=$(openssl rand -hex 12)
 
   # Pass password via stdin to avoid shell-escaping issues with special chars
   app_hash=$(printf '%s' "$APP_PASSWORD" | python3 -c "

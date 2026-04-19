@@ -6,3 +6,4 @@ nginx/ssl/
 Thumbs.db
 npm-debug.log*
 plan/*
+.claude/*
