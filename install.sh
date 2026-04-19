@@ -115,7 +115,7 @@ write_compose_file() {
 
 # ── User inputs ───────────────────────────────────────────────────────────────
 SKIP_ENV=false
-APP_USERNAME="" APP_PASSWORD="" DOMAIN="" ACME_EMAIL="" DOCKER_REPO="" TORRO_VERSION=""
+APP_USERNAME="" APP_PASSWORD="" DOMAIN="" ACME_EMAIL=""
 
 gather_inputs() {
   section "Configuration"
@@ -152,12 +152,6 @@ gather_inputs() {
 
   read -rp "  Let's Encrypt email: " ACME_EMAIL <"$TTY"
   if [[ -z "$ACME_EMAIL" ]]; then die "Email cannot be empty."; fi
-
-  read -rp "  DockerHub username/org (e.g. johndoe): " DOCKER_REPO <"$TTY"
-  if [[ -z "$DOCKER_REPO" ]]; then die "DockerHub username cannot be empty."; fi
-
-  read -rp "  Image version to deploy [latest]: " TORRO_VERSION <"$TTY"
-  TORRO_VERSION="${TORRO_VERSION:-latest}"
 }
 
 # ── Write .env ────────────────────────────────────────────────────────────────
@@ -194,8 +188,8 @@ ALLOWED_ORIGIN=https://${DOMAIN}
 DOMAIN=${DOMAIN}
 ACME_EMAIL=${ACME_EMAIL}
 
-DOCKER_REPO=${DOCKER_REPO}
-TORRO_VERSION=${TORRO_VERSION}
+DOCKER_REPO=optimumsage
+TORRO_VERSION=latest
 EOF
 
   chmod 600 .env
@@ -298,7 +292,6 @@ main() {
   echo
   echo -e "  To upgrade:"
   echo -e "    cd ${INSTALL_DIR}"
-  echo -e "    Edit TORRO_VERSION in .env, then:"
   echo -e "    $SUDO docker compose -f $COMPOSE_FILE pull && $SUDO docker compose -f $COMPOSE_FILE up -d"
   echo
   echo -e "  Other commands:"

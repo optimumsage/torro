@@ -83,7 +83,7 @@ install_python_bcrypt() {
 
 # ── User inputs ───────────────────────────────────────────────────────────────
 SKIP_ENV=false
-APP_USERNAME="" APP_PASSWORD="" DOMAIN="" ACME_EMAIL="" DOCKER_REPO="" TORRO_VERSION=""
+APP_USERNAME="" APP_PASSWORD="" DOMAIN="" ACME_EMAIL=""
 
 gather_inputs() {
   section "Configuration"
@@ -120,12 +120,6 @@ gather_inputs() {
 
   read -rp "  Let's Encrypt email: " ACME_EMAIL
   if [[ -z "$ACME_EMAIL" ]]; then die "Email cannot be empty."; fi
-
-  read -rp "  DockerHub username/org (e.g. johndoe): " DOCKER_REPO
-  if [[ -z "$DOCKER_REPO" ]]; then die "DockerHub username cannot be empty."; fi
-
-  read -rp "  Image version to deploy [latest]: " TORRO_VERSION
-  TORRO_VERSION="${TORRO_VERSION:-latest}"
 }
 
 # ── Write .env ────────────────────────────────────────────────────────────────
@@ -162,8 +156,8 @@ ALLOWED_ORIGIN=https://${DOMAIN}
 DOMAIN=${DOMAIN}
 ACME_EMAIL=${ACME_EMAIL}
 
-DOCKER_REPO=${DOCKER_REPO}
-TORRO_VERSION=${TORRO_VERSION}
+DOCKER_REPO=optimumsage
+TORRO_VERSION=latest
 EOF
 
   chmod 600 .env
@@ -258,8 +252,7 @@ main() {
   echo -e "  Username: ${BOLD}${username}${NC}"
   echo -e "  Password: (the one you entered)"
   echo
-  echo -e "  To upgrade to a new version:"
-  echo -e "    Edit TORRO_VERSION in .env, then:"
+  echo -e "  To upgrade:"
   echo -e "    $SUDO docker compose -f $COMPOSE_FILE pull && $SUDO docker compose -f $COMPOSE_FILE up -d"
   echo
   echo -e "  Other commands:"
