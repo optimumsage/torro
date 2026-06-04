@@ -7,8 +7,8 @@ import { validate } from '../middleware/validate.js';
 import { badRequest, notFound } from '../utils/errors.js';
 import { env } from '../env.js';
 import { ffmpegAvailableCheck, probeCached, classify } from '../services/ffmpeg.js';
-import { buildPlaylist, getSegment } from '../services/transcode.js';
-import { getPoster, getStoryboardSprite, buildStoryboardVtt } from '../services/thumbnails.js';
+import { getOrStartSession, readPlaylistWhenReady, getSessionSegment } from '../services/transcode.js';
+import { getPoster, getStoryboardSprite, buildStoryboardVtt, spritePath } from '../services/thumbnails.js';
 
 const router = Router();
 
@@ -58,25 +58,26 @@ router.get('/probe', validate({ query: z.object({ path: z.string().min(1) }) }),
   });
 });
 
-// --- HLS playlist (lazy on-demand transcode) --------------------------------
+// --- HLS playlist (stream-copy H.264 / transcode others; downmix audio) ------
 router.get('/hls.m3u8', validate({ query: z.object({ path: z.string().min(1) }) }), async (req, res) => {
   const full = resolveFile(req);
   const info = await probeCached(full);
   if (!info) throw badRequest('Cannot read media');
-  const playlist = buildPlaylist(encodeURIComponent(String(req.query.path)), info);
+  const session = getOrStartSession(full, info, encodeURIComponent(String(req.query.path)));
+  const playlist = await readPlaylistWhenReady(session);
+  if (!playlist) throw badRequest('Failed to prepare stream');
   res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+  res.setHeader('Cache-Control', 'no-cache');
   res.send(playlist);
 });
 
 router.get(
   '/segment',
-  validate({ query: z.object({ path: z.string().min(1), i: z.coerce.number().int().nonnegative() }) }),
+  validate({ query: z.object({ path: z.string().min(1), seg: z.string().regex(/^seg\d+\.ts$/) }) }),
   async (req, res) => {
     const full = resolveFile(req);
-    const info = await probeCached(full);
-    if (!info) throw badRequest('Cannot read media');
-    const index = Number(req.query.i);
-    const segPath = await getSegment(full, index, info);
+    const segPath = await getSessionSegment(full, String(req.query.seg));
+    if (!segPath) throw notFound('Segment not ready');
     res.setHeader('Content-Type', 'video/mp2t');
     res.setHeader('Cache-Control', 'public, max-age=3600');
     fs.createReadStream(segPath).pipe(res);
@@ -94,13 +95,16 @@ router.get('/poster', validate({ query: z.object({ path: z.string().min(1) }) })
   res.sendFile(poster);
 });
 
+// Thumbnails are generated in the background — never block playback. Until the
+// sprite is ready these 404, and the player simply shows no scrub previews yet.
 router.get('/storyboard.vtt', validate({ query: z.object({ path: z.string().min(1) }) }), async (req, res) => {
   const full = resolveFile(req);
   const info = await probeCached(full);
   if (!info?.hasVideo) throw notFound('No storyboard');
-  // Kick off sprite generation; the VTT references the sprite endpoint.
-  const sprite = await getStoryboardSprite(full, info);
-  if (!sprite) throw notFound('No storyboard');
+  if (!fs.existsSync(spritePath(full))) {
+    void getStoryboardSprite(full, info); // fire-and-forget; deduped internally
+    throw notFound('Storyboard generating');
+  }
   res.setHeader('Content-Type', 'text/vtt');
   res.setHeader('Cache-Control', 'public, max-age=86400');
   res.send(buildStoryboardVtt(encodeURIComponent(String(req.query.path)), info));
@@ -108,12 +112,9 @@ router.get('/storyboard.vtt', validate({ query: z.object({ path: z.string().min(
 
 router.get('/sprite', validate({ query: z.object({ path: z.string().min(1) }) }), async (req, res) => {
   const full = resolveFile(req);
-  const info = await probeCached(full);
-  if (!info?.hasVideo) throw notFound('No sprite');
-  const sprite = await getStoryboardSprite(full, info);
-  if (!sprite) throw notFound('No sprite');
+  if (!fs.existsSync(spritePath(full))) throw notFound('Sprite not ready');
   res.setHeader('Cache-Control', 'public, max-age=86400');
-  res.sendFile(sprite);
+  res.sendFile(spritePath(full));
 });
 
 // --- Direct progressive streaming / download (byte-range) -------------------

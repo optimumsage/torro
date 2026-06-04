@@ -6,6 +6,7 @@ export interface MediaInfo {
   durationSec: number;
   videoCodec: string | null;
   audioCodec: string | null;
+  audioChannels: number | null;
   width: number | null;
   height: number | null;
   hasVideo: boolean;
@@ -67,6 +68,7 @@ export async function probe(filePath: string): Promise<MediaInfo | null> {
       durationSec: Math.max(0, parseFloat(data.format?.duration ?? '0') || 0),
       videoCodec: video?.codec_name ?? null,
       audioCodec: audio?.codec_name ?? null,
+      audioChannels: audio?.channels ?? null,
       width: video?.width ?? null,
       height: video?.height ?? null,
       hasVideo: !!video,
@@ -93,7 +95,10 @@ export async function probeCached(filePath: string): Promise<MediaInfo | null> {
 export function classify(filePath: string, info: MediaInfo): PlaybackMode {
   const ext = path.extname(filePath).toLowerCase();
   const videoOk = !info.hasVideo || (info.videoCodec != null && DIRECT_VIDEO.has(info.videoCodec));
-  const audioOk = !info.hasAudio || (info.audioCodec != null && DIRECT_AUDIO.has(info.audioCodec));
+  // Multichannel (5.1/7.1) audio frequently stalls browser playback — downmix it via HLS.
+  const audioOk =
+    !info.hasAudio ||
+    (info.audioCodec != null && DIRECT_AUDIO.has(info.audioCodec) && (info.audioChannels ?? 2) <= 2);
   return DIRECT_CONTAINERS.has(ext) && videoOk && audioOk ? 'direct' : 'hls';
 }
 

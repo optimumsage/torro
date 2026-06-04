@@ -90,9 +90,13 @@ export function storyboardMeta(info: MediaInfo): StoryboardMeta {
   return { interval, count, cols: COLS, thumbW: THUMB_W, thumbH: THUMB_H };
 }
 
+export function spritePath(filePath: string): string {
+  return path.join(THUMB_ROOT, `${cacheKey(filePath)}.sprite.jpg`);
+}
+
 // A sprite sheet of evenly-spaced frames, cached (decodes the whole file — lazy + one-time).
 export async function getStoryboardSprite(filePath: string, info: MediaInfo): Promise<string | null> {
-  const out = path.join(THUMB_ROOT, `${cacheKey(filePath)}.sprite.jpg`);
+  const out = spritePath(filePath);
   if (fs.existsSync(out)) return out;
   return once(out, async () => {
     ensureDir(THUMB_ROOT);
