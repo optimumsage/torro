@@ -12,7 +12,9 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80"]
+      # Verify the full proxy path to the backend. localhost resolves to ::1 in this
+      # image but nginx listens on IPv4, so use 127.0.0.1 over the HTTPS vhost.
+      test: ["CMD", "wget", "-q", "--no-check-certificate", "--spider", "https://127.0.0.1:443/health"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -26,9 +28,14 @@ services:
     environment:
       - QBIT_URL=http://qbittorrent:8080
       - DOWNLOADS_PATH=/downloads
+      - DATA_DIR=/data
+      - RP_ID=localhost
+      - RP_NAME=Torro
       - NODE_ENV=production
+      - COOKIE_SECURE=false
     volumes:
       - downloads:/downloads
+      - torro_data:/data
       - ./.env:/run/config/.env:ro
     depends_on:
       qbittorrent:
@@ -64,3 +71,4 @@ services:
 volumes:
   downloads:
   qbit_config:
+  torro_data:

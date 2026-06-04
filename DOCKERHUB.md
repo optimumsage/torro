@@ -67,6 +67,7 @@ services:
 volumes:
   downloads:
   qbit_config:
+  torro_data:
 ```
 
 ## Configuration
@@ -76,28 +77,33 @@ All secrets are passed via a `.env` file mounted at `/run/config/.env` inside th
 **`.env` file:**
 
 ```env
-JWT_SECRET=<64+ random hex chars — openssl rand -hex 32>
 APP_USERNAME=admin
-APP_PASSWORD_HASH=<bcrypt hash — see below>
+RECOVERY_PASSWORD_HASH=<bcrypt hash — see below>
 QBIT_USERNAME=admin
 QBIT_PASSWORD=<qbittorrent webui password>
 ALLOWED_ORIGIN=https://torro.example.com
+RP_ID=torro.example.com
 ```
 
-**Generate a bcrypt hash for your password:**
+Login is via **passkeys (WebAuthn)**; the recovery password is the fallback and is used to
+enrol the first passkey. `RP_ID` must equal the hostname users visit. Sessions are stored
+server-side in a SQLite database on the `torro_data` volume (no `JWT_SECRET` needed).
+
+**Generate a bcrypt hash for your recovery password:**
 
 ```bash
 docker run --rm node:20-alpine node \
   -e "const b=require('bcryptjs'); console.log(b.hashSync('yourpassword',12));"
 ```
 
-Paste the output as `APP_PASSWORD_HASH` with no surrounding quotes.
+Paste the output as `RECOVERY_PASSWORD_HASH` with no surrounding quotes.
 
 ## Volumes
 
 | Volume | Description |
 |---|---|
 | `downloads` | Shared with qBittorrent — completed files live here |
+| `torro_data` | SQLite database (passkeys + sessions); mount at `/data` |
 | `/run/config/.env` | Bind-mount your `.env` file here (read-only) |
 
 ## Environment variables (container-level)

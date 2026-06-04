@@ -12,6 +12,7 @@ set -euo pipefail
 
 INSTALL_DIR="${TORRO_DIR:-$HOME/torro}"
 COMPOSE_FILE="docker-compose.prod.yml"
+MANUAL_TLS_FILE="docker-compose.manual-tls.yml"
 GITHUB_RAW="https://raw.githubusercontent.com/optimumsage/torro/main"
 
 # ── Colours ───────────────────────────────────────────────────────────────────
@@ -42,6 +43,10 @@ detect_docker_access() {
     die "Cannot connect to Docker daemon. You may need to log out and back in, then re-run this script."
   fi
 }
+
+# Wrapper so all compose calls automatically include the right -f flags
+COMPOSE_EXTRA="-f $COMPOSE_FILE"
+dc() { $SUDO docker compose $COMPOSE_EXTRA "$@"; }
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 install_docker() {
@@ -115,7 +120,9 @@ write_compose_file() {
 
 # ── User inputs ───────────────────────────────────────────────────────────────
 SKIP_ENV=false
+USE_MANUAL_CERT=false
 APP_USERNAME="" APP_PASSWORD="" DOMAIN="" ACME_EMAIL=""
+CERT_SRC="" KEY_SRC=""
 
 gather_inputs() {
   section "Configuration"
@@ -134,13 +141,15 @@ gather_inputs() {
   read -rp "  App username [admin]: " APP_USERNAME <"$TTY"
   APP_USERNAME="${APP_USERNAME:-admin}"
 
+  info "Login uses passkeys (WebAuthn). This recovery password is the fallback if"
+  info "you lose your passkey, and is used to enroll your first passkey on first run."
   while true; do
-    read -rsp "  App password: " APP_PASSWORD <"$TTY"; echo
+    read -rsp "  Recovery password: " APP_PASSWORD <"$TTY"; echo
     if [[ -z "$APP_PASSWORD" ]]; then
       warn "Password cannot be empty."
       continue
     fi
-    read -rsp "  Confirm password: " _confirm <"$TTY"; echo
+    read -rsp "  Confirm recovery password: " _confirm <"$TTY"; echo
     if [[ "$APP_PASSWORD" == "$_confirm" ]]; then
       break
     fi
@@ -150,8 +159,24 @@ gather_inputs() {
   read -rp "  Domain (e.g. torro.example.com): " DOMAIN <"$TTY"
   if [[ -z "$DOMAIN" ]]; then die "Domain cannot be empty."; fi
 
-  read -rp "  Let's Encrypt email: " ACME_EMAIL <"$TTY"
-  if [[ -z "$ACME_EMAIL" ]]; then die "Email cannot be empty."; fi
+  echo
+  read -rp "  Use a custom SSL certificate instead of Let's Encrypt? [y/N]: " use_cert <"$TTY"
+  if [[ "$use_cert" =~ ^[Yy]$ ]]; then
+    USE_MANUAL_CERT=true
+    while true; do
+      read -rp "  Path to certificate file (cert.crt): " CERT_SRC <"$TTY"
+      if [[ -f "$CERT_SRC" ]]; then break; fi
+      warn "File not found: $CERT_SRC"
+    done
+    while true; do
+      read -rp "  Path to private key file (cert.key): " KEY_SRC <"$TTY"
+      if [[ -f "$KEY_SRC" ]]; then break; fi
+      warn "File not found: $KEY_SRC"
+    done
+  else
+    read -rp "  Let's Encrypt email: " ACME_EMAIL <"$TTY"
+    if [[ -z "$ACME_EMAIL" ]]; then die "Email cannot be empty."; fi
+  fi
 }
 
 # ── Write .env ────────────────────────────────────────────────────────────────
@@ -165,27 +190,26 @@ write_env() {
 
   info "Generating secrets..."
 
-  local jwt_secret qbit_password app_hash
-  jwt_secret=$(openssl rand -hex 32)
+  local qbit_password recovery_hash
   qbit_password=$(openssl rand -hex 12)
 
-  app_hash=$(printf '%s' "$APP_PASSWORD" | python3 -c "
+  # Bcrypt hash of the recovery password (verified by bcryptjs in the app).
+  recovery_hash=$(printf '%s' "$APP_PASSWORD" | python3 -c "
 import bcrypt, sys
 pw = sys.stdin.buffer.read()
 print(bcrypt.hashpw(pw, bcrypt.gensalt(12)).decode())
 ")
 
   cat > .env << EOF
-JWT_SECRET=${jwt_secret}
-
 APP_USERNAME=${APP_USERNAME}
-APP_PASSWORD_HASH=${app_hash}
+RECOVERY_PASSWORD_HASH=${recovery_hash}
 
 QBIT_USERNAME=admin
 QBIT_PASSWORD=${qbit_password}
 
 ALLOWED_ORIGIN=https://${DOMAIN}
 DOMAIN=${DOMAIN}
+RP_ID=${DOMAIN}
 ACME_EMAIL=${ACME_EMAIL}
 
 DOCKER_REPO=optimumsage
@@ -200,31 +224,91 @@ EOF
 # ── Traefik ───────────────────────────────────────────────────────────────────
 setup_traefik() {
   mkdir -p traefik
-  # Always wipe acme.json — stale LE account data from a previous install causes
-  # "accountDoesNotExist" errors and cert issuance fails silently.
-  printf '' > traefik/acme.json
+  # Only create acme.json if it doesn't exist — never wipe it.
+  # Traefik reuses existing certs and LE accounts across reinstalls.
+  # Wiping it on every install burns through LE's 5-certs-per-week rate limit.
+  if [[ ! -f traefik/acme.json ]]; then
+    touch traefik/acme.json
+  fi
   chmod 600 traefik/acme.json
-  success "traefik/acme.json ready (chmod 600)"
+
+  if [[ "$USE_MANUAL_CERT" == true ]]; then
+    cp "$CERT_SRC" traefik/cert.crt
+    cp "$KEY_SRC"  traefik/cert.key
+    chmod 600 traefik/cert.key
+
+    mkdir -p traefik/dynamic
+    cat > traefik/dynamic/tls.yml << 'EOF'
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /certs/cert.crt
+        keyFile: /certs/cert.key
+EOF
+
+    # Override compose file: replaces Traefik command (removes ACME, adds file
+    # provider) and mounts the cert files + dynamic config directory.
+    # The torro router label sets tls=true with no certresolver so Traefik
+    # serves the default cert from the file provider instead of requesting ACME.
+    cat > "$MANUAL_TLS_FILE" << 'EOF'
+services:
+  traefik:
+    command:
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --ping=true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/acme.json:/acme.json
+      - ./traefik/cert.crt:/certs/cert.crt:ro
+      - ./traefik/cert.key:/certs/cert.key:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+
+  torro:
+    labels:
+      - traefik.enable=true
+      - "traefik.http.routers.torro.rule=Host(`${DOMAIN}`)"
+      - traefik.http.routers.torro.entrypoints=websecure
+      - traefik.http.routers.torro.tls=true
+      - traefik.http.services.torro.loadbalancer.server.port=3000
+EOF
+
+    success "Manual SSL certificates configured"
+  fi
+
+  # Set COMPOSE_EXTRA: include manual-tls override if it exists (handles
+  # both fresh installs with manual certs and idempotent reinstalls).
+  if [[ -f "$MANUAL_TLS_FILE" ]]; then
+    COMPOSE_EXTRA="-f $COMPOSE_FILE -f $MANUAL_TLS_FILE"
+  else
+    COMPOSE_EXTRA="-f $COMPOSE_FILE"
+  fi
 }
 
 # ── qBittorrent first-run ─────────────────────────────────────────────────────
 wait_qbit_healthy() {
   local elapsed=0
   while true; do
-    if $SUDO docker compose -f "$COMPOSE_FILE" ps qbittorrent 2>/dev/null | grep -q "(healthy)"; then
+    if dc ps qbittorrent 2>/dev/null | grep -q "(healthy)"; then
       return 0
     fi
     sleep 5
     elapsed=$((elapsed + 5))
     if [[ $elapsed -gt 150 ]]; then
-      die "qBittorrent did not become healthy after 150s. Check: docker compose -f $COMPOSE_FILE logs qbittorrent"
+      die "qBittorrent did not become healthy after 150s. Check: dc logs qbittorrent"
     fi
   done
 }
 
 get_qbit_temp_pass() {
   # grep returns non-zero when no match — use || true so set -e doesn't fire
-  $SUDO docker compose -f "$COMPOSE_FILE" logs qbittorrent 2>&1 \
+  dc logs qbittorrent 2>&1 \
     | grep -i "temporary password" | tail -1 \
     | sed 's/.*: //' | tr -d '[:space:]\r\n' || true
 }
@@ -233,7 +317,7 @@ set_qbit_password() {
   local temp_pass="$1"
   local login_result verify
 
-  login_result=$($SUDO docker compose -f "$COMPOSE_FILE" exec -T qbittorrent \
+  login_result=$(dc exec -T qbittorrent \
     curl -s -c /tmp/qc -b /tmp/qc \
       --data "username=admin&password=${temp_pass}" \
       http://localhost:8080/api/v2/auth/login 2>/dev/null || echo "fail")
@@ -242,13 +326,13 @@ set_qbit_password() {
     die "Could not log into qBittorrent with temporary password (got: $login_result)."
   fi
 
-  $SUDO docker compose -f "$COMPOSE_FILE" exec -T qbittorrent \
+  dc exec -T qbittorrent \
     curl -s -c /tmp/qc -b /tmp/qc \
       --data "json={\"web_ui_password\":\"${QBIT_PASSWORD}\",\"web_ui_max_auth_fail_count\":0}" \
       http://localhost:8080/api/v2/app/setPreferences > /dev/null 2>&1 || true
-  $SUDO docker compose -f "$COMPOSE_FILE" exec -T qbittorrent rm -f /tmp/qc 2>/dev/null || true
+  dc exec -T qbittorrent rm -f /tmp/qc 2>/dev/null || true
 
-  verify=$($SUDO docker compose -f "$COMPOSE_FILE" exec -T qbittorrent \
+  verify=$(dc exec -T qbittorrent \
     curl -s --data "username=admin&password=${QBIT_PASSWORD}" \
     http://localhost:8080/api/v2/auth/login 2>/dev/null || echo "fail")
 
@@ -258,11 +342,11 @@ set_qbit_password() {
 }
 
 reset_qbit_password_config() {
-  $SUDO docker compose -f "$COMPOSE_FILE" stop qbittorrent
+  dc stop qbittorrent
 
   # Derive the compose project name to find the correct Docker volume
   local project_name
-  project_name=$($SUDO docker compose -f "$COMPOSE_FILE" config --format json 2>/dev/null \
+  project_name=$(dc config --format json 2>/dev/null \
     | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
   if [[ -z "$project_name" ]]; then
     project_name="torro"
@@ -272,7 +356,7 @@ reset_qbit_password_config() {
     -v "${project_name}_qbit_config:/config" \
     alpine sh -c "sed -i '/WebUI.Password_PBKDF2/d' /config/qBittorrent/qBittorrent.conf 2>/dev/null || true"
 
-  $SUDO docker compose -f "$COMPOSE_FILE" start qbittorrent
+  dc start qbittorrent
 }
 
 configure_qbittorrent() {
@@ -281,7 +365,7 @@ configure_qbittorrent() {
 
   # Happy path: password already matches (idempotent re-run)
   local result
-  result=$($SUDO docker compose -f "$COMPOSE_FILE" exec -T qbittorrent \
+  result=$(dc exec -T qbittorrent \
     curl -s --max-time 5 \
     --data "username=admin&password=${QBIT_PASSWORD}" \
     http://localhost:8080/api/v2/auth/login 2>/dev/null || echo "fail")
@@ -312,7 +396,7 @@ configure_qbittorrent() {
 
   temp_pass=$(get_qbit_temp_pass)
   if [[ -z "$temp_pass" ]]; then
-    die "Could not get a temporary password from qBittorrent after config reset. Check: docker compose -f $COMPOSE_FILE logs qbittorrent"
+    die "Could not get a temporary password from qBittorrent after config reset. Check: dc logs qbittorrent"
   fi
 
   info "Setting permanent qBittorrent password..."
@@ -340,20 +424,20 @@ main() {
 
   gather_inputs
   write_env
-  setup_traefik
+  setup_traefik      # sets COMPOSE_EXTRA; dc() is ready after this
 
   section "Pulling images"
-  $SUDO docker compose -f "$COMPOSE_FILE" pull
+  dc pull
   success "Images pulled"
 
   section "Starting services"
-  $SUDO docker compose -f "$COMPOSE_FILE" up -d
+  dc up -d
   success "All containers started"
 
   # If .env was rewritten, the torro container may still be running with old
   # env values cached by dotenv. Force a restart so it picks up the new secrets.
   if [[ "$SKIP_ENV" == false ]]; then
-    $SUDO docker compose -f "$COMPOSE_FILE" restart torro
+    dc restart torro
   fi
 
   configure_qbittorrent
@@ -366,19 +450,22 @@ main() {
   echo
   echo -e "  ${GREEN}${BOLD}▸ https://${domain}${NC}"
   echo
-  echo -e "  Username: ${BOLD}${username}${NC}"
-  echo -e "  Password: (the one you entered)"
+  echo -e "  ${BOLD}First step:${NC} open the site and enroll your first passkey."
+  echo -e "  Choose ${BOLD}Use recovery password${NC}, enter username ${BOLD}${username}${NC} and"
+  echo -e "  the recovery password you set, then create a passkey (e.g. with Bitwarden)."
+  echo -e "  After that, sign in with your passkey. You can add more passkeys in Settings."
   echo
   echo -e "  Installation directory: ${BOLD}${INSTALL_DIR}${NC}"
   echo
+  local compose_cmd="$SUDO docker compose $COMPOSE_EXTRA"
   echo -e "  To upgrade:"
   echo -e "    cd ${INSTALL_DIR}"
-  echo -e "    $SUDO docker compose -f $COMPOSE_FILE pull && $SUDO docker compose -f $COMPOSE_FILE up -d"
+  echo -e "    ${compose_cmd} pull && ${compose_cmd} up -d"
   echo
   echo -e "  Other commands:"
-  echo -e "    $SUDO docker compose -f ${INSTALL_DIR}/$COMPOSE_FILE logs -f"
-  echo -e "    $SUDO docker compose -f ${INSTALL_DIR}/$COMPOSE_FILE ps"
-  echo -e "    $SUDO docker compose -f ${INSTALL_DIR}/$COMPOSE_FILE down"
+  echo -e "    ${compose_cmd} logs -f"
+  echo -e "    ${compose_cmd} ps"
+  echo -e "    ${compose_cmd} down"
   echo
 }
 
