@@ -13,6 +13,8 @@ FROM node:20-alpine
 ARG VERSION=dev
 WORKDIR /app
 ENV NODE_ENV=production
+# ffmpeg/ffprobe power video transcoding + thumbnail generation
+RUN apk add --no-cache ffmpeg
 COPY package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
