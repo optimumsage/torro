@@ -9,6 +9,13 @@ import { env } from '../env.js';
 import { ffmpegAvailableCheck, probeCached, classify } from '../services/ffmpeg.js';
 import { getOrStartSession, readPlaylistWhenReady, getSessionSegment } from '../services/transcode.js';
 import { getPoster, getStoryboardSprite, buildStoryboardVtt, spritePath } from '../services/thumbnails.js';
+import {
+  listExternalSubs,
+  languageLabel,
+  extractEmbeddedVtt,
+  externalSubToVtt,
+  isSubtitleFile,
+} from '../services/subtitles.js';
 
 const router = Router();
 
@@ -39,15 +46,33 @@ function resolveFile(req: Request): string {
 // --- Probe: how should the client play this file? ---------------------------
 router.get('/probe', validate({ query: z.object({ path: z.string().min(1) }) }), async (req, res) => {
   const full = resolveFile(req);
+  const relPath = String(req.query.path);
+  const enc = encodeURIComponent(relPath);
   if (!(await ffmpegAvailableCheck())) {
-    res.json({ mode: 'direct', transcoding: false, thumbnails: false });
+    res.json({ mode: 'direct', transcoding: false, thumbnails: false, subtitles: [] });
     return;
   }
   const info = await probeCached(full);
   if (!info) {
-    res.json({ mode: 'direct', transcoding: false, thumbnails: false });
+    res.json({ mode: 'direct', transcoding: false, thumbnails: false, subtitles: [] });
     return;
   }
+  const subtitles = [
+    ...info.subtitles.map((s) => ({
+      id: `embedded:${s.index}`,
+      label: s.title || languageLabel(s.lang) || `Subtitle ${s.index + 1}`,
+      lang: s.lang,
+      source: 'embedded' as const,
+      src: `/api/stream/subtitle.vtt?path=${enc}&track=${s.index}`,
+    })),
+    ...listExternalSubs(full, relPath).map((e) => ({
+      id: `external:${e.file}`,
+      label: e.label,
+      lang: e.lang,
+      source: 'external' as const,
+      src: `/api/stream/subtitle.vtt?file=${encodeURIComponent(e.file)}`,
+    })),
+  ];
   res.json({
     mode: classify(full, info),
     transcoding: true,
@@ -55,8 +80,43 @@ router.get('/probe', validate({ query: z.object({ path: z.string().min(1) }) }),
     durationSec: info.durationSec,
     width: info.width,
     height: info.height,
+    subtitles,
   });
 });
+
+// --- Subtitles: embedded stream (?path&track) or sibling file (?file) → WebVTT
+router.get(
+  '/subtitle.vtt',
+  validate({
+    query: z.object({
+      path: z.string().optional(),
+      track: z.coerce.number().int().nonnegative().optional(),
+      file: z.string().optional(),
+    }),
+  }),
+  async (req, res) => {
+    let vtt: Buffer | null = null;
+    if (req.query.file != null) {
+      let subFull: string;
+      try {
+        subFull = safeJoin(env.DOWNLOADS_PATH, String(req.query.file));
+      } catch {
+        throw badRequest('Invalid path');
+      }
+      if (!isSubtitleFile(subFull) || !fs.existsSync(subFull)) throw notFound('Subtitle not found');
+      vtt = await externalSubToVtt(subFull);
+    } else if (req.query.path != null && req.query.track != null) {
+      const full = resolveFile(req);
+      vtt = await extractEmbeddedVtt(full, Number(req.query.track));
+    } else {
+      throw badRequest('Missing subtitle reference');
+    }
+    if (!vtt) throw notFound('Subtitle unavailable');
+    res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.send(vtt);
+  }
+);
 
 // --- HLS playlist (stream-copy H.264 / transcode others; downmix audio) ------
 router.get('/hls.m3u8', validate({ query: z.object({ path: z.string().min(1) }) }), async (req, res) => {

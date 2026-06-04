@@ -1,5 +1,13 @@
 import { api } from './client';
 
+export interface SubtitleTrack {
+  id: string;
+  label: string;
+  lang?: string;
+  source: 'embedded' | 'external';
+  src: string;
+}
+
 export interface ProbeResult {
   mode: 'direct' | 'hls';
   transcoding: boolean;
@@ -7,6 +15,7 @@ export interface ProbeResult {
   durationSec?: number;
   width?: number | null;
   height?: number | null;
+  subtitles?: SubtitleTrack[];
 }
 
 const enc = (p: string) => encodeURIComponent(p);

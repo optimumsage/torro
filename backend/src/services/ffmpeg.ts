@@ -2,6 +2,13 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { logger } from '../logger.js';
 
+export interface SubtitleStream {
+  index: number; // subtitle-relative index for ffmpeg's -map 0:s:<index>
+  codec: string;
+  lang?: string;
+  title?: string;
+}
+
 export interface MediaInfo {
   durationSec: number;
   videoCodec: string | null;
@@ -11,7 +18,12 @@ export interface MediaInfo {
   height: number | null;
   hasVideo: boolean;
   hasAudio: boolean;
+  subtitles: SubtitleStream[];
 }
+
+// Embedded subtitle codecs we can convert to WebVTT (text-based). Image-based
+// subs (PGS, VobSub, DVB) would need OCR, so they're excluded.
+export const TEXT_SUB_CODECS = new Set(['subrip', 'srt', 'ass', 'ssa', 'mov_text', 'webvtt', 'text', 'stl']);
 
 export type PlaybackMode = 'direct' | 'hls';
 
@@ -64,6 +76,16 @@ export async function probe(filePath: string): Promise<MediaInfo | null> {
     const data = JSON.parse(stdout);
     const video = data.streams?.find((s: any) => s.codec_type === 'video' && s.disposition?.attached_pic !== 1);
     const audio = data.streams?.find((s: any) => s.codec_type === 'audio');
+    let subIdx = -1;
+    const subtitles: SubtitleStream[] = (data.streams ?? [])
+      .filter((s: any) => s.codec_type === 'subtitle')
+      .map((s: any) => ({
+        index: ++subIdx,
+        codec: s.codec_name as string,
+        lang: s.tags?.language,
+        title: s.tags?.title,
+      }))
+      .filter((s: SubtitleStream) => TEXT_SUB_CODECS.has(s.codec));
     return {
       durationSec: Math.max(0, parseFloat(data.format?.duration ?? '0') || 0),
       videoCodec: video?.codec_name ?? null,
@@ -73,6 +95,7 @@ export async function probe(filePath: string): Promise<MediaInfo | null> {
       height: video?.height ?? null,
       hasVideo: !!video,
       hasAudio: !!audio,
+      subtitles,
     };
   } catch {
     return null;

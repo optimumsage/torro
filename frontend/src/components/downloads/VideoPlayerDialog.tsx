@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
-import { MediaPlayer, MediaProvider, Poster, isHLSProvider, type MediaProviderAdapter } from '@vidstack/react';
+import { MediaPlayer, MediaProvider, Poster, Track, isHLSProvider, type MediaProviderAdapter } from '@vidstack/react';
 import { defaultLayoutIcons, DefaultVideoLayout } from '@vidstack/react/player/layouts/default';
 import Hls from 'hls.js';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -36,6 +36,7 @@ function PlayerBody({ file }: { file: DownloadFile }) {
       ? { src: hlsUrl(file.path), type: 'application/x-mpegurl' as const }
       : { src: directUrl(file.path), type: directType(file.name) as 'video/mp4' };
   const hasThumbs = probe?.thumbnails ?? false;
+  const subtitles = probe?.subtitles ?? [];
 
   return (
     <MediaPlayer
@@ -50,6 +51,9 @@ function PlayerBody({ file }: { file: DownloadFile }) {
     >
       <MediaProvider>
         {hasThumbs && <Poster className="vds-poster" src={posterUrl(file.path)} alt={file.name} />}
+        {subtitles.map((s) => (
+          <Track key={s.id} src={s.src} kind="subtitles" label={s.label} language={s.lang} type="vtt" />
+        ))}
       </MediaProvider>
       <DefaultVideoLayout
         icons={defaultLayoutIcons}

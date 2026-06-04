@@ -12,6 +12,7 @@ function info(partial: Partial<MediaInfo>): MediaInfo {
     height: 1080,
     hasVideo: true,
     hasAudio: true,
+    subtitles: [],
     ...partial,
   };
 }
