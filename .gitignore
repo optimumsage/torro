@@ -1,5 +1,9 @@
 .env
+.env.*
+!.env.example
+*.db
 node_modules/
+backend/dist/
 frontend/dist/
 nginx/ssl/
 traefik/acme.json

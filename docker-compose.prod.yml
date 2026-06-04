@@ -32,9 +32,13 @@ services:
     environment:
       - QBIT_URL=http://qbittorrent:8080
       - DOWNLOADS_PATH=/downloads
+      - DATA_DIR=/data
+      - RP_ID=${RP_ID:-${DOMAIN}}
+      - RP_NAME=Torro
       - NODE_ENV=production
     volumes:
       - downloads:/downloads
+      - torro_data:/data
       - ./.env:/run/config/.env:ro
     depends_on:
       qbittorrent:
@@ -78,3 +82,4 @@ services:
 volumes:
   downloads:
   qbit_config:
+  torro_data:
