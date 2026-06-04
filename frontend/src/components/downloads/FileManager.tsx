@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { FolderOpen, Play, Download, Trash2, FileVideo, File as FileIcon, MoreVertical } from 'lucide-react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { FolderOpen, Download, Trash2, MoreVertical } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -12,7 +12,12 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { EmptyState } from '@/components/common/EmptyState';
-import { VideoPlayerDialog } from './VideoPlayerDialog';
+import { VideoThumb } from './VideoThumb';
+
+// Player (Vidstack + hls.js) is heavy — load it only when a video is opened.
+const VideoPlayerDialog = lazy(() =>
+  import('./VideoPlayerDialog').then((m) => ({ default: m.VideoPlayerDialog }))
+);
 import { useConfirm } from '@/components/common/confirm';
 import { useDownloads, useRemoveDownloadGroup, useRemoveDownloadFile } from '@/hooks/useDownloads';
 import { streamUrl } from '@/api/downloads';
@@ -97,24 +102,19 @@ export function FileManager() {
                     {group.files.map((file) => (
                       <li
                         key={file.path}
-                        className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent/60"
+                        className="flex items-center gap-3 rounded-md px-2 py-1.5 hover:bg-accent/60"
                       >
-                        {file.isVideo ? (
-                          <FileVideo className="h-4 w-4 shrink-0 text-primary" />
-                        ) : (
-                          <FileIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-                        )}
+                        <VideoThumb
+                          path={file.path}
+                          isVideo={file.isVideo}
+                          onPlay={() => setPlaying(file)}
+                        />
                         <span className="flex-1 truncate text-sm" title={file.name}>
                           {file.name}
                         </span>
                         <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
                           {formatBytes(file.size)}
                         </span>
-                        {file.isVideo && (
-                          <Button variant="ghost" size="icon" aria-label="Play" onClick={() => setPlaying(file)}>
-                            <Play className="h-4 w-4" />
-                          </Button>
-                        )}
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button variant="ghost" size="icon" aria-label="File actions">
@@ -141,7 +141,11 @@ export function FileManager() {
           </Accordion>
         </Card>
       )}
-      <VideoPlayerDialog file={playing} onClose={() => setPlaying(null)} />
+      {playing && (
+        <Suspense fallback={null}>
+          <VideoPlayerDialog file={playing} onClose={() => setPlaying(null)} />
+        </Suspense>
+      )}
     </section>
   );
 }

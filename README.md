@@ -13,6 +13,8 @@ Self-hosted torrent downloader with a modern web UI. Add magnet links or `.torre
 - **Manage devices** — list and revoke active sessions; register multiple passkeys.
 - **Live progress** over a WebSocket with automatic reconnect and a polling fallback.
 - **Selective downloading** — pick exactly which files in a torrent to fetch.
+- **In-browser video player** (Vidstack) that plays anything: web-friendly files stream directly, while incompatible ones (MKV, HEVC/H.265, AC3…) are transcoded **on demand** to H.264/AAC via HLS — only the parts you actually watch are processed, so CPU stays low.
+- **Automatic thumbnails** — a poster frame per video plus hover-scrub previews on the player timeline (ffmpeg-generated and cached).
 - **Stream or download** completed files (with HTTP range support) directly in the browser.
 - Dark/light theme, drag-and-drop `.torrent` upload, paste-to-add magnets.
 

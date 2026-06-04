@@ -1,11 +1,68 @@
+import { useQuery } from '@tanstack/react-query';
+import { Loader2 } from 'lucide-react';
+import { MediaPlayer, MediaProvider, Poster, isHLSProvider, type MediaProviderAdapter } from '@vidstack/react';
+import { defaultLayoutIcons, DefaultVideoLayout } from '@vidstack/react/player/layouts/default';
+import Hls from 'hls.js';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { streamUrl } from '@/api/downloads';
+import { mediaApi, directUrl, hlsUrl, posterUrl, storyboardUrl, directType } from '@/api/media';
 import type { DownloadFile } from '@/types';
+import '@vidstack/react/player/styles/default/theme.css';
+import '@vidstack/react/player/styles/default/layouts/video.css';
+
+// Use the bundled hls.js instead of Vidstack's default CDN load (works offline + under CSP).
+function onProviderChange(provider: MediaProviderAdapter | null) {
+  if (isHLSProvider(provider)) provider.library = Hls;
+}
+
+function PlayerBody({ file }: { file: DownloadFile }) {
+  const { data: probe, isLoading } = useQuery({
+    queryKey: ['probe', file.path],
+    queryFn: () => mediaApi.probe(file.path),
+    staleTime: 5 * 60 * 1000,
+    retry: 0,
+  });
+
+  if (isLoading) {
+    return (
+      <div className="flex aspect-video items-center justify-center rounded-lg bg-black">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  const mode = probe?.mode ?? 'direct';
+  const src =
+    mode === 'hls'
+      ? { src: hlsUrl(file.path), type: 'application/x-mpegurl' as const }
+      : { src: directUrl(file.path), type: directType(file.name) as 'video/mp4' };
+  const hasThumbs = probe?.thumbnails ?? false;
+
+  return (
+    <MediaPlayer
+      className="overflow-hidden rounded-lg"
+      title={file.name}
+      src={src}
+      aspectRatio="16/9"
+      playsInline
+      autoPlay
+      onProviderChange={onProviderChange}
+      streamType="on-demand"
+    >
+      <MediaProvider>
+        {hasThumbs && <Poster className="vds-poster" src={posterUrl(file.path)} alt={file.name} />}
+      </MediaProvider>
+      <DefaultVideoLayout
+        icons={defaultLayoutIcons}
+        thumbnails={hasThumbs ? storyboardUrl(file.path) : undefined}
+      />
+    </MediaPlayer>
+  );
+}
 
 export function VideoPlayerDialog({ file, onClose }: { file: DownloadFile | null; onClose: () => void }) {
   return (
     <Dialog open={!!file} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="max-w-4xl gap-3 p-4">
         {file && (
           <>
             <DialogHeader>
@@ -13,17 +70,7 @@ export function VideoPlayerDialog({ file, onClose }: { file: DownloadFile | null
                 {file.name}
               </DialogTitle>
             </DialogHeader>
-            <video
-              src={streamUrl(file.path)}
-              controls
-              autoPlay
-              className="max-h-[70vh] w-full rounded-lg bg-black"
-            />
-            {/\.(mkv|avi)$/i.test(file.name) && (
-              <p className="text-xs text-muted-foreground">
-                Some browsers can't play MKV/AVI. If it doesn't load, download the file instead.
-              </p>
-            )}
+            <PlayerBody file={file} />
           </>
         )}
       </DialogContent>

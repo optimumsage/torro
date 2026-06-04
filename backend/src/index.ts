@@ -6,6 +6,7 @@ import { seedRecoveryHash } from './auth/state.js';
 import { initQbit } from './services/qbit.js';
 import { pruneExpiredSessions } from './auth/session.js';
 import { pruneExpiredChallenges } from './auth/passkeys.js';
+import { pruneHlsCache } from './services/mediaCache.js';
 import { createApp } from './app.js';
 import { setupProgressWs } from './realtime/progressWs.js';
 
@@ -19,6 +20,7 @@ async function main(): Promise<void> {
     const now = Date.now();
     pruneExpiredSessions(db, now);
     pruneExpiredChallenges(db, now);
+    pruneHlsCache();
   }, 60 * 60 * 1000).unref();
 
   const app = createApp();
