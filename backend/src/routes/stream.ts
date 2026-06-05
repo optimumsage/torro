@@ -73,8 +73,12 @@ router.get('/probe', validate({ query: z.object({ path: z.string().min(1) }) }),
       src: `/api/stream/subtitle.vtt?file=${encodeURIComponent(e.file)}`,
     })),
   ];
+  const mode = classify(full, info);
+  // Warm the segment plan (keyframe scan) in the background so it's ready by the
+  // time the player requests the playlist.
+  if (mode === 'hls') void getPlan(full, info).catch(() => {});
   res.json({
-    mode: classify(full, info),
+    mode,
     transcoding: true,
     thumbnails: info.hasVideo,
     durationSec: info.durationSec,

@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { MediaInfo } from './ffmpeg.js';
-import { cacheKey, HLS_ROOT, ensureDir } from './mediaCache.js';
+import { cacheKey, HLS_ROOT, THUMB_ROOT, ensureDir } from './mediaCache.js';
 import { logger } from './../logger.js';
 
 const TARGET_SECONDS = 6;
@@ -39,6 +39,7 @@ export interface SegmentPlan {
 }
 
 const planCache = new Map<string, SegmentPlan>();
+const planInflight = new Map<string, Promise<SegmentPlan>>();
 
 function run(cmd: string, args: string[], timeoutMs: number): Promise<{ ok: boolean; stdout: string }> {
   return new Promise((resolve) => {
@@ -101,21 +102,47 @@ function fixedPlan(duration: number): Segment[] {
 
 export async function getPlan(file: string, info: MediaInfo): Promise<SegmentPlan> {
   const key = cacheKey(file);
-  const cached = planCache.get(key);
-  if (cached) return cached;
+  const mem = planCache.get(key);
+  if (mem) return mem;
+  const pending = planInflight.get(key);
+  if (pending) return pending;
 
-  const isH264 = info.videoCodec === 'h264';
-  let segments: Segment[];
-  if (isH264) {
-    const kf = await keyframeTimes(file);
-    segments = kf ? planFromKeyframes(kf, info.durationSec) : fixedPlan(info.durationSec);
-  } else {
-    segments = fixedPlan(info.durationSec); // transcode path snaps its own keyframes
-  }
-  const targetDuration = Math.ceil(Math.max(TARGET_SECONDS, ...segments.map((s) => s.dur)));
-  const plan: SegmentPlan = { copy: isH264, segments, targetDuration };
-  planCache.set(key, plan);
-  return plan;
+  // Persisted on the /data volume → the (slow) keyframe scan runs once *ever* per file.
+  const planFile = path.join(THUMB_ROOT, `${key}.plan.json`);
+
+  const job = (async (): Promise<SegmentPlan> => {
+    try {
+      const disk = JSON.parse(fs.readFileSync(planFile, 'utf8')) as SegmentPlan;
+      if (disk?.segments?.length) {
+        planCache.set(key, disk);
+        return disk;
+      }
+    } catch {
+      /* not cached yet */
+    }
+
+    const isH264 = info.videoCodec === 'h264';
+    let segments: Segment[];
+    if (isH264) {
+      const kf = await keyframeTimes(file);
+      segments = kf ? planFromKeyframes(kf, info.durationSec) : fixedPlan(info.durationSec);
+    } else {
+      segments = fixedPlan(info.durationSec); // transcode path snaps its own keyframes
+    }
+    const targetDuration = Math.ceil(Math.max(TARGET_SECONDS, ...segments.map((s) => s.dur)));
+    const plan: SegmentPlan = { copy: isH264, segments, targetDuration };
+    try {
+      ensureDir(THUMB_ROOT);
+      fs.writeFileSync(planFile, JSON.stringify(plan));
+    } catch {
+      /* best-effort cache */
+    }
+    planCache.set(key, plan);
+    return plan;
+  })().finally(() => planInflight.delete(key));
+
+  planInflight.set(key, job);
+  return job;
 }
 
 // Static VOD playlist → the player knows the full duration immediately and can seek anywhere.
