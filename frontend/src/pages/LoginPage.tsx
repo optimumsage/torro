@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState } from 'react';
+import { Navigate } from 'react-router-dom';
 import { browserSupportsWebAuthn } from '@simplewebauthn/browser';
 import { Fingerprint, KeyRound, Loader2, Waves } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -7,13 +7,19 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ThemeToggle } from '@/components/layout/theme';
-import { useAuthState, usePasskeyLogin, useRecoveryLogin, useEnrollPasskey } from '@/hooks/useAuth';
+import { useAuthState, useMe, usePasskeyLogin, useRecoveryLogin, useEnrollPasskey } from '@/hooks/useAuth';
 import { apiErrorMessage } from '@/api/client';
 
 type Mode = 'passkey' | 'recovery';
 
+// Full reload after login → fresh app state fetches /me once with the new cookie and
+// lands on the dashboard. Avoids client-side cache races between route guards.
+function goHome() {
+  window.location.href = '/';
+}
+
 export default function LoginPage() {
-  const navigate = useNavigate();
+  const { data: me } = useMe();
   const { data: state, isLoading } = useAuthState();
   const passkeyLogin = usePasskeyLogin();
   const recoveryLogin = useRecoveryLogin();
@@ -25,9 +31,8 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const supportsWebAuthn = browserSupportsWebAuthn();
 
-  useEffect(() => {
-    if (state?.authenticated) navigate('/', { replace: true });
-  }, [state?.authenticated, navigate]);
+  // Already signed in (e.g. opened /login directly) → go to the dashboard.
+  if (me?.authenticated) return <Navigate to="/" replace />;
 
   const needsEnrollment = state && !state.hasPasskeys;
 
@@ -35,7 +40,7 @@ export default function LoginPage() {
     setError('');
     try {
       await passkeyLogin.mutateAsync();
-      navigate('/', { replace: true });
+      goHome();
     } catch (err) {
       if (err instanceof Error && (err.name === 'NotAllowedError' || err.name === 'AbortError')) return;
       setError(apiErrorMessage(err, 'Passkey sign-in failed'));
@@ -47,7 +52,7 @@ export default function LoginPage() {
     setError('');
     try {
       await recoveryLogin.mutateAsync({ username, password });
-      navigate('/', { replace: true });
+      goHome();
     } catch (err) {
       setError(apiErrorMessage(err, 'Invalid username or password'));
     }
@@ -58,7 +63,7 @@ export default function LoginPage() {
     setError('');
     try {
       await enroll.mutateAsync({ label: 'Primary', recoveryPassword: password });
-      navigate('/', { replace: true });
+      goHome();
     } catch (err) {
       if (err instanceof Error && err.name === 'NotAllowedError') {
         setError('Passkey creation was cancelled.');
