@@ -1,162 +1,217 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { MediaInfo } from './ffmpeg.js';
 import { cacheKey, HLS_ROOT, ensureDir } from './mediaCache.js';
 import { logger } from './../logger.js';
 
-export const SEGMENT_SECONDS = 6;
-const MAX_SESSIONS = 2;
+const TARGET_SECONDS = 6;
+const MAX_CONCURRENT = 3;
 
-interface Session {
-  key: string;
-  dir: string;
-  playlist: string;
-  proc: ChildProcess | null;
-  done: boolean;
-  error: boolean;
-  startedAt: number;
+let active = 0;
+const queue: Array<() => void> = [];
+const inflight = new Map<string, Promise<string>>();
+
+function acquire(): Promise<void> {
+  if (active < MAX_CONCURRENT) {
+    active++;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => queue.push(resolve));
 }
-
-const sessions = new Map<string, Session>();
-
-function hasEndList(playlist: string): boolean {
-  try {
-    return fs.readFileSync(playlist, 'utf8').includes('#EXT-X-ENDLIST');
-  } catch {
-    return false;
+function release(): void {
+  active--;
+  const next = queue.shift();
+  if (next) {
+    active++;
+    next();
   }
 }
 
-// Copy H.264 (no re-encode — fast, light); transcode anything else. Always downmix
-// audio to stereo AAC so multichannel tracks play in every browser.
-function ffmpegArgs(file: string, info: MediaInfo, enc: string, dir: string): string[] {
-  const video =
-    info.videoCodec === 'h264'
-      ? ['-c:v', 'copy']
-      : [
-          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-pix_fmt', 'yuv420p',
-          '-force_key_frames', `expr:gte(t,n_forced*${SEGMENT_SECONDS})`,
-        ];
+export interface Segment {
+  start: number;
+  dur: number;
+}
+export interface SegmentPlan {
+  copy: boolean; // stream-copy video (h264) vs transcode
+  segments: Segment[];
+  targetDuration: number;
+}
+
+const planCache = new Map<string, SegmentPlan>();
+
+function run(cmd: string, args: string[], timeoutMs: number): Promise<{ ok: boolean; stdout: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'ignore'] });
+    let stdout = '';
+    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    child.stdout.on('data', (d) => (stdout += d));
+    child.on('error', () => {
+      clearTimeout(timer);
+      resolve({ ok: false, stdout });
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ ok: code === 0, stdout });
+    });
+  });
+}
+
+// Read keyframe timestamps (fast for indexed containers like MP4/MKV).
+async function keyframeTimes(file: string): Promise<number[] | null> {
+  const { ok, stdout } = await run(
+    'ffprobe',
+    ['-loglevel', 'error', '-select_streams', 'v:0', '-skip_frame', 'nokey',
+     '-show_entries', 'frame=pts_time', '-of', 'csv=p=0', file],
+    30000
+  );
+  if (!ok) return null;
+  const times = stdout
+    .split('\n')
+    .map((l) => parseFloat(l))
+    .filter((n) => Number.isFinite(n))
+    .sort((a, b) => a - b);
+  return times.length ? times : null;
+}
+
+// Group keyframes into >=TARGET-second, keyframe-aligned segments (so copy cuts are clean).
+function planFromKeyframes(keyframes: number[], duration: number): Segment[] {
+  const segs: Segment[] = [];
+  let i = 0;
+  const kf = keyframes[0] === 0 ? keyframes : [0, ...keyframes];
+  while (i < kf.length) {
+    const start = kf[i]!;
+    let j = i + 1;
+    while (j < kf.length && kf[j]! - start < TARGET_SECONDS) j++;
+    const end = j < kf.length ? kf[j]! : duration;
+    if (end - start > 0.1) segs.push({ start, dur: end - start });
+    if (j >= kf.length) break;
+    i = j;
+  }
+  return segs.length ? segs : [{ start: 0, dur: duration }];
+}
+
+function fixedPlan(duration: number): Segment[] {
+  const segs: Segment[] = [];
+  for (let t = 0; t < duration; t += TARGET_SECONDS) {
+    segs.push({ start: t, dur: Math.min(TARGET_SECONDS, duration - t) });
+  }
+  return segs.length ? segs : [{ start: 0, dur: duration }];
+}
+
+export async function getPlan(file: string, info: MediaInfo): Promise<SegmentPlan> {
+  const key = cacheKey(file);
+  const cached = planCache.get(key);
+  if (cached) return cached;
+
+  const isH264 = info.videoCodec === 'h264';
+  let segments: Segment[];
+  if (isH264) {
+    const kf = await keyframeTimes(file);
+    segments = kf ? planFromKeyframes(kf, info.durationSec) : fixedPlan(info.durationSec);
+  } else {
+    segments = fixedPlan(info.durationSec); // transcode path snaps its own keyframes
+  }
+  const targetDuration = Math.ceil(Math.max(TARGET_SECONDS, ...segments.map((s) => s.dur)));
+  const plan: SegmentPlan = { copy: isH264, segments, targetDuration };
+  planCache.set(key, plan);
+  return plan;
+}
+
+// Static VOD playlist → the player knows the full duration immediately and can seek anywhere.
+export function buildVodPlaylist(encodedPath: string, plan: SegmentPlan): string {
+  const lines = [
+    '#EXTM3U',
+    '#EXT-X-VERSION:3',
+    '#EXT-X-PLAYLIST-TYPE:VOD',
+    `#EXT-X-TARGETDURATION:${plan.targetDuration}`,
+    '#EXT-X-MEDIA-SEQUENCE:0',
+    '#EXT-X-INDEPENDENT-SEGMENTS',
+  ];
+  plan.segments.forEach((s, i) => {
+    lines.push(`#EXTINF:${s.dur.toFixed(3)},`);
+    lines.push(`segment?path=${encodedPath}&i=${i}`);
+  });
+  lines.push('#EXT-X-ENDLIST');
+  return lines.join('\n') + '\n';
+}
+
+function segmentArgs(file: string, seg: Segment, copy: boolean, out: string): string[] {
+  const video = copy
+    ? ['-c:v', 'copy']
+    : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-pix_fmt', 'yuv420p',
+       '-force_key_frames', 'expr:gte(t,0)'];
   return [
     '-nostdin', '-loglevel', 'error', '-y',
+    '-ss', String(seg.start),
     '-i', file,
+    '-t', String(seg.dur),
     '-map', '0:v:0', '-map', '0:a:0?',
     ...video,
     '-c:a', 'aac', '-ac', '2', '-b:a', '160k',
-    '-f', 'hls',
-    '-hls_time', String(SEGMENT_SECONDS),
-    '-hls_playlist_type', 'event',
-    '-hls_flags', 'independent_segments+temp_file',
-    '-hls_base_url', `segment?path=${enc}&seg=`,
-    '-hls_segment_filename', path.join(dir, 'seg%05d.ts'),
-    path.join(dir, 'index.m3u8'),
+    '-muxdelay', '0', '-muxpreload', '0',
+    '-output_ts_offset', String(seg.start),
+    '-f', 'mpegts',
+    out,
   ];
 }
 
-function evictIfNeeded(): void {
-  const live = [...sessions.values()].filter((s) => !s.done && !s.error);
-  if (live.length < MAX_SESSIONS) return;
-  live.sort((a, b) => a.startedAt - b.startedAt);
-  const oldest = live[0];
-  if (oldest) {
-    oldest.proc?.kill('SIGKILL');
-    sessions.delete(oldest.key);
-  }
+function ffmpeg(args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d.toString().slice(0, 1500)));
+    const timer = setTimeout(() => child.kill('SIGKILL'), 120000);
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      code === 0 ? resolve() : reject(new Error(`ffmpeg ${code}: ${stderr.slice(-300)}`));
+    });
+  });
 }
 
-function startSession(file: string, info: MediaInfo, enc: string): Session {
-  evictIfNeeded();
+// Produce (or reuse) segment `index`. Concurrent identical requests share the work.
+export async function getSegment(file: string, info: MediaInfo, index: number): Promise<string | null> {
+  const plan = await getPlan(file, info);
+  const seg = plan.segments[index];
+  if (!seg) return null;
+
   const key = cacheKey(file);
   const dir = path.join(HLS_ROOT, key);
-  ensureDir(dir);
-  const playlist = path.join(dir, 'index.m3u8');
-  const proc = spawn('ffmpeg', ffmpegArgs(file, info, enc, dir), { stdio: ['ignore', 'ignore', 'pipe'] });
-  const session: Session = { key, dir, playlist, proc, done: false, error: false, startedAt: Date.now() };
-  let stderr = '';
-  proc.stderr?.on('data', (d) => (stderr += d.toString().slice(0, 1000)));
-  proc.on('close', (code) => {
-    session.proc = null;
-    if (code === 0) {
-      session.done = true;
-      // Convert the growing event playlist into a finished VOD playlist.
+  const out = path.join(dir, `${index}.ts`);
+  if (fs.existsSync(out)) {
+    fs.utimesSync(out, new Date(), new Date());
+    return out;
+  }
+
+  const dedupe = `${key}:${index}`;
+  const existing = inflight.get(dedupe);
+  if (existing) return existing;
+
+  const job = (async () => {
+    ensureDir(dir);
+    const tmp = `${out}.tmp`;
+    await acquire();
+    try {
+      await ffmpeg(segmentArgs(file, seg, plan.copy, tmp));
+      fs.renameSync(tmp, out);
+      return out;
+    } catch (err) {
       try {
-        if (!hasEndList(playlist)) fs.appendFileSync(playlist, '\n#EXT-X-ENDLIST\n');
+        fs.rmSync(tmp, { force: true });
       } catch {
         /* ignore */
       }
-    } else {
-      session.error = true;
-      logger.debug({ code, stderr: stderr.slice(-300) }, 'hls session ffmpeg failed');
+      logger.debug({ err, index }, 'segment generation failed');
+      throw err;
+    } finally {
+      release();
+      inflight.delete(dedupe);
     }
-  });
-  sessions.set(key, session);
-  return session;
-}
-
-// Get a live/finished session for a file, starting ffmpeg if needed.
-export function getOrStartSession(file: string, info: MediaInfo, enc: string): Session {
-  const key = cacheKey(file);
-  const existing = sessions.get(key);
-  if (existing && !existing.error) return existing;
-
-  // Reuse a fully-rendered playlist left on disk from a previous run.
-  const dir = path.join(HLS_ROOT, key);
-  const playlist = path.join(dir, 'index.m3u8');
-  if (!existing && hasEndList(playlist)) {
-    const session: Session = { key, dir, playlist, proc: null, done: true, error: false, startedAt: Date.now() };
-    sessions.set(key, session);
-    return session;
-  }
-  return startSession(file, info, enc);
-}
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-// Wait until the playlist exists and lists at least one segment (or is finished).
-export async function readPlaylistWhenReady(session: Session, timeoutMs = 25000): Promise<string | null> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (session.error) return null;
-    try {
-      const content = fs.readFileSync(session.playlist, 'utf8');
-      if (content.includes('.ts') || content.includes('#EXT-X-ENDLIST')) return content;
-    } catch {
-      /* not written yet */
-    }
-    await sleep(250);
-  }
-  // Return whatever exists even if still warming up.
-  try {
-    return fs.readFileSync(session.playlist, 'utf8');
-  } catch {
-    return null;
-  }
-}
-
-// Resolve a segment file, waiting briefly if a (transcoding) session hasn't reached it yet.
-export async function getSessionSegment(file: string, seg: string, timeoutMs = 30000): Promise<string | null> {
-  const dir = path.join(HLS_ROOT, cacheKey(file));
-  const segPath = path.join(dir, seg);
-  const session = sessions.get(cacheKey(file));
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (fs.existsSync(segPath)) {
-      fs.utimesSync(segPath, new Date(), new Date());
-      return segPath;
-    }
-    if (session?.done || session?.error || !session) break;
-    await sleep(250);
-  }
-  return fs.existsSync(segPath) ? segPath : null;
-}
-
-export function cleanupSessions(maxAgeMs = 2 * 60 * 60 * 1000): void {
-  const cutoff = Date.now() - maxAgeMs;
-  for (const [key, s] of sessions) {
-    if (s.startedAt < cutoff && (s.done || s.error)) {
-      s.proc?.kill('SIGKILL');
-      sessions.delete(key);
-    }
-  }
+  })();
+  inflight.set(dedupe, job);
+  return job;
 }

@@ -7,7 +7,7 @@ import { validate } from '../middleware/validate.js';
 import { badRequest, notFound } from '../utils/errors.js';
 import { env } from '../env.js';
 import { ffmpegAvailableCheck, probeCached, classify } from '../services/ffmpeg.js';
-import { getOrStartSession, readPlaylistWhenReady, getSessionSegment } from '../services/transcode.js';
+import { getPlan, buildVodPlaylist, getSegment } from '../services/transcode.js';
 import { getPoster, getStoryboardSprite, buildStoryboardVtt, spritePath } from '../services/thumbnails.js';
 import {
   listExternalSubs,
@@ -118,14 +118,14 @@ router.get(
   }
 );
 
-// --- HLS playlist (stream-copy H.264 / transcode others; downmix audio) ------
+// --- HLS playlist: static VOD (full duration known up front; seek anywhere).
+// H.264 is stream-copied (fast); other codecs are transcoded. Audio downmixed to stereo.
 router.get('/hls.m3u8', validate({ query: z.object({ path: z.string().min(1) }) }), async (req, res) => {
   const full = resolveFile(req);
   const info = await probeCached(full);
   if (!info) throw badRequest('Cannot read media');
-  const session = getOrStartSession(full, info, encodeURIComponent(String(req.query.path)));
-  const playlist = await readPlaylistWhenReady(session);
-  if (!playlist) throw badRequest('Failed to prepare stream');
+  const plan = await getPlan(full, info);
+  const playlist = buildVodPlaylist(encodeURIComponent(String(req.query.path)), plan);
   res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
   res.setHeader('Cache-Control', 'no-cache');
   res.send(playlist);
@@ -133,11 +133,13 @@ router.get('/hls.m3u8', validate({ query: z.object({ path: z.string().min(1) }) 
 
 router.get(
   '/segment',
-  validate({ query: z.object({ path: z.string().min(1), seg: z.string().regex(/^seg\d+\.ts$/) }) }),
+  validate({ query: z.object({ path: z.string().min(1), i: z.coerce.number().int().nonnegative() }) }),
   async (req, res) => {
     const full = resolveFile(req);
-    const segPath = await getSessionSegment(full, String(req.query.seg));
-    if (!segPath) throw notFound('Segment not ready');
+    const info = await probeCached(full);
+    if (!info) throw badRequest('Cannot read media');
+    const segPath = await getSegment(full, info, Number(req.query.i));
+    if (!segPath) throw notFound('Segment not available');
     res.setHeader('Content-Type', 'video/mp2t');
     res.setHeader('Cache-Control', 'public, max-age=3600');
     fs.createReadStream(segPath).pipe(res);
