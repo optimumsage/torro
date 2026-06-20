@@ -19,6 +19,17 @@ import {
 
 const router = Router();
 
+// Pipe a file read stream to the response, destroying the read stream when the
+// response closes. Video players abort range requests constantly (seeking,
+// closing the player); plain .pipe() does NOT close the source on an early
+// client disconnect, leaking an open file descriptor each time. A leaked fd on
+// a file that is later deleted pins its disk space until the process restarts.
+function pipeFile(readStream: fs.ReadStream, res: Response): void {
+  res.on('close', () => readStream.destroy());
+  readStream.on('error', () => readStream.destroy());
+  readStream.pipe(res);
+}
+
 const MIME: Record<string, string> = {
   '.mp4': 'video/mp4',
   '.mkv': 'video/x-matroska',
@@ -146,7 +157,7 @@ router.get(
     if (!segPath) throw notFound('Segment not available');
     res.setHeader('Content-Type', 'video/mp2t');
     res.setHeader('Cache-Control', 'public, max-age=3600');
-    fs.createReadStream(segPath).pipe(res);
+    pipeFile(fs.createReadStream(segPath), res);
   }
 );
 
@@ -203,7 +214,7 @@ router.get('/', validate({ query: pathQuery }), (req: Request, res: Response) =>
       'Content-Length': end - start + 1,
       'Content-Type': contentType,
     });
-    fs.createReadStream(fullPath, { start, end }).pipe(res);
+    pipeFile(fs.createReadStream(fullPath, { start, end }), res);
   } else {
     res.writeHead(200, {
       'Content-Length': fileSize,
@@ -213,7 +224,7 @@ router.get('/', validate({ query: pathQuery }), (req: Request, res: Response) =>
         'Content-Disposition': `attachment; filename="${path.basename(filePath)}"`,
       }),
     });
-    fs.createReadStream(fullPath).pipe(res);
+    pipeFile(fs.createReadStream(fullPath), res);
   }
 });
 
