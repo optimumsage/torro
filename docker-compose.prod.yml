@@ -98,7 +98,8 @@ services:
       - "9117"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9117/UI/Login"]
+      # GET (not --spider/HEAD) — Jackett 302-redirects HEADs to a cookie test.
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:9117/UI/Login"]
       interval: 15s
       timeout: 5s
       retries: 10

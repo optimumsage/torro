@@ -471,7 +471,8 @@ seed_jackett_key() {
 wait_jackett_healthy() {
   local elapsed=0
   while true; do
-    if dc exec -T jackett wget -q --spider http://localhost:9117/UI/Login 2>/dev/null; then
+    # GET (not --spider) — Jackett redirects HEAD requests to a cookie test.
+    if dc exec -T jackett curl -fsS -o /dev/null http://localhost:9117/UI/Login 2>/dev/null; then
       return 0
     fi
     sleep 5
