@@ -27,6 +27,8 @@ services:
       - "3000"
     environment:
       - QBIT_URL=http://qbittorrent:8080
+      - JACKETT_URL=http://jackett:9117
+      - JACKETT_API_KEY=${JACKETT_API_KEY:-}
       - DOWNLOADS_PATH=/downloads
       - DATA_DIR=/data
       - RP_ID=localhost
@@ -40,6 +42,9 @@ services:
     depends_on:
       qbittorrent:
         condition: service_healthy
+      jackett:
+        # Search is non-critical — don't block the app if Jackett is slow/down.
+        condition: service_started
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:3000/health"]
@@ -68,7 +73,27 @@ services:
       retries: 10
       start_period: 30s
 
+  jackett:
+    image: lscr.io/linuxserver/jackett:latest
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+    volumes:
+      - jackett_config:/config
+    # Bound to loopback so you can open the Jackett UI locally to add indexers.
+    ports:
+      - "127.0.0.1:9117:9117"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9117/UI/Login"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
 volumes:
   downloads:
   qbit_config:
+  jackett_config:
   torro_data:

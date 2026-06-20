@@ -25,6 +25,10 @@ const schema = z.object({
   QBIT_USERNAME: z.string().default('admin'),
   QBIT_PASSWORD: z.string().default('adminadmin'),
 
+  // Jackett (torrent search). Search is disabled when the API key is unset.
+  JACKETT_URL: z.string().url().default('http://jackett:9117'),
+  JACKETT_API_KEY: z.string().optional(),
+
   // Filesystem
   DOWNLOADS_PATH: z.string().default('/downloads'),
   DATA_DIR: z.string().default('/data'),
@@ -83,6 +87,8 @@ function deriveOrigins(): string[] {
 export const env = {
   ...e,
   isProd,
+  // Torrent search is available only when a Jackett API key is configured.
+  jackettEnabled: !!e.JACKETT_API_KEY,
   // COOKIE_SECURE defaults to true but is forced off in non-prod so cookies work over http://localhost.
   cookieSecure: isProd ? e.COOKIE_SECURE : false,
   rpId: deriveRpId(),

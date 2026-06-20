@@ -4,6 +4,7 @@ import { logger } from './logger.js';
 import { initDb } from './db/index.js';
 import { seedRecoveryHash } from './auth/state.js';
 import { initQbit } from './services/qbit.js';
+import { initJackett } from './services/jackett.js';
 import { pruneExpiredSessions } from './auth/session.js';
 import { pruneExpiredChallenges } from './auth/passkeys.js';
 import { pruneHlsCache } from './services/mediaCache.js';
@@ -14,6 +15,7 @@ async function main(): Promise<void> {
   const db = initDb(env.dbPath);
   seedRecoveryHash(db, env.RECOVERY_PASSWORD_HASH);
   initQbit(env.QBIT_URL, env.QBIT_USERNAME, env.QBIT_PASSWORD);
+  if (env.JACKETT_API_KEY) initJackett(env.JACKETT_URL, env.JACKETT_API_KEY);
 
   // Periodically prune expired sessions and ceremony challenges.
   setInterval(() => {

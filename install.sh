@@ -191,10 +191,12 @@ gather_inputs() {
 
 # ── Write .env ────────────────────────────────────────────────────────────────
 QBIT_PASSWORD=""
+JACKETT_API_KEY=""
 
 write_env() {
   if [[ "$SKIP_ENV" == true ]]; then
     QBIT_PASSWORD=$(grep '^QBIT_PASSWORD=' .env | cut -d= -f2-)
+    JACKETT_API_KEY=$(grep '^JACKETT_API_KEY=' .env | cut -d= -f2- || true)
     return
   fi
 
@@ -202,6 +204,7 @@ write_env() {
 
   local qbit_password recovery_hash
   qbit_password=$(openssl rand -hex 12)
+  JACKETT_API_KEY=$(openssl rand -hex 16)
 
   # Bcrypt hash of the recovery password (verified by bcryptjs in the app).
   recovery_hash=$(printf '%s' "$APP_PASSWORD" | python3 -c "
@@ -216,6 +219,8 @@ RECOVERY_PASSWORD_HASH=${recovery_hash}
 
 QBIT_USERNAME=admin
 QBIT_PASSWORD=${qbit_password}
+
+JACKETT_API_KEY=${JACKETT_API_KEY}
 
 ALLOWED_ORIGIN=https://${DOMAIN}
 DOMAIN=${DOMAIN}
@@ -437,6 +442,91 @@ configure_qbittorrent() {
   success "qBittorrent configured"
 }
 
+# ── Jackett (torrent search) ──────────────────────────────────────────────────
+# Derive the compose project name so we can address its named volumes directly.
+compose_project_name() {
+  local name
+  name=$(dc config --format json 2>/dev/null \
+    | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+  echo "${name:-torro}"
+}
+
+# Pre-seed Jackett's API key into its config volume BEFORE first boot. Jackett
+# reads /config/Jackett/api_key.txt when no key is set, making the key
+# deterministic (no log-scraping, no race). Idempotent — skips if already set.
+seed_jackett_key() {
+  [[ -z "$JACKETT_API_KEY" ]] && return 0
+  local project vol
+  project=$(compose_project_name)
+  vol="${project}_jackett_config"
+  $SUDO docker volume inspect "$vol" >/dev/null 2>&1 || $SUDO docker volume create "$vol" >/dev/null
+  $SUDO docker run --rm -v "${vol}:/config" alpine sh -c "
+    mkdir -p /config/Jackett
+    if ! grep -q '\"APIKey\"' /config/Jackett/ServerConfig.json 2>/dev/null; then
+      printf '%s' '${JACKETT_API_KEY}' > /config/Jackett/api_key.txt
+    fi
+  " >/dev/null 2>&1 || warn "Could not pre-seed Jackett API key (will fall back to generated key)"
+}
+
+wait_jackett_healthy() {
+  local elapsed=0
+  while true; do
+    if dc exec -T jackett wget -q --spider http://localhost:9117/UI/Login 2>/dev/null; then
+      return 0
+    fi
+    sleep 5
+    elapsed=$((elapsed + 5))
+    if [[ $elapsed -gt 90 ]]; then
+      warn "Jackett didn't come up within 90s — search may be unavailable until it does."
+      return 1
+    fi
+  done
+}
+
+# Enable a default set of public indexers (incl. the required YTS). Jackett's
+# indexer-config API is gated by a UI session rather than the api key, so we
+# drive the cookie flow (no admin password → an empty POST enables a public
+# indexer). All best-effort; never fatal.
+configure_jackett() {
+  info "Waiting for Jackett (torrent search) to start..."
+  wait_jackett_healthy || return 0
+
+  info "Enabling default indexers (YTS, The Pirate Bay, 1337x)..."
+  local enabled
+  enabled=$(dc exec -T jackett sh -c '
+    J=/tmp/jck.jar; rm -f "$J"
+    curl -sL -c "$J" -b "$J" http://localhost:9117/UI/Dashboard -o /dev/null || exit 0
+    for idx in yts thepiratebay 1337x; do
+      curl -s -b "$J" -c "$J" -X POST -H "Content-Type: application/json" --data "[]" \
+        http://localhost:9117/api/v2.0/indexers/$idx/config -o /dev/null 2>/dev/null || true
+    done
+    curl -s -b "$J" -c "$J" http://localhost:9117/api/v2.0/indexers 2>/dev/null \
+      | grep -o "\"configured\":true" | wc -l
+  ' 2>/dev/null | tr -cd '0-9' || echo 0)
+
+  if [[ "${enabled:-0}" -gt 0 ]]; then
+    success "Torrent search ready (${enabled} indexer(s) enabled, including YTS)"
+    return 0
+  fi
+
+  warn "Could not auto-enable Jackett indexers — add at least one (e.g. YTS) manually:"
+  echo -e "    1) ${BOLD}ssh -L 9117:localhost:9117 <user>@<server>${NC} (temporarily bind 127.0.0.1:9117:9117)"
+  echo -e "    2) open ${BOLD}http://localhost:9117${NC} → ${BOLD}+ Add Indexer${NC} → search ${BOLD}yts${NC} → Add"
+}
+
+# Ensure JACKETT_API_KEY exists in an already-installed .env (for upgrades from
+# versions that predate search). Generates + persists + seeds it if missing.
+ensure_jackett_key() {
+  JACKETT_API_KEY=$(grep '^JACKETT_API_KEY=' .env | cut -d= -f2- || true)
+  if [[ -n "$JACKETT_API_KEY" ]]; then
+    return 0
+  fi
+  info "Adding a Jackett API key for torrent search..."
+  JACKETT_API_KEY=$(openssl rand -hex 16)
+  printf 'JACKETT_API_KEY=%s\n' "$JACKETT_API_KEY" >> .env
+  seed_jackett_key
+}
+
 # ── Upgrade ───────────────────────────────────────────────────────────────────
 # `install.sh upgrade` — pull the latest image, refresh the compose file, restart
 # services, and reclaim disk space from previously-deleted files. No prompts; the
@@ -456,6 +546,7 @@ do_upgrade() {
   section "Updating compose file"
   write_compose_file
   set_compose_extra
+  ensure_jackett_key   # backfill the search API key for installs predating it
 
   section "Pulling images"
   dc pull
@@ -464,6 +555,8 @@ do_upgrade() {
   section "Restarting services"
   dc up -d --remove-orphans
   success "Services restarted on the latest image"
+
+  configure_jackett
 
   section "Reclaiming disk space"
   reclaim_disk_space
@@ -497,6 +590,7 @@ main() {
   gather_inputs
   write_env
   setup_traefik      # sets COMPOSE_EXTRA; dc() is ready after this
+  seed_jackett_key   # pre-seed the search API key before Jackett's first boot
 
   section "Pulling images"
   dc pull
@@ -513,6 +607,7 @@ main() {
   fi
 
   configure_qbittorrent
+  configure_jackett
 
   local domain username
   domain=$(grep '^DOMAIN=' .env | cut -d= -f2-)
@@ -529,10 +624,12 @@ main() {
   echo
   echo -e "  Installation directory: ${BOLD}${INSTALL_DIR}${NC}"
   echo
+  echo -e "  ${BOLD}Torrent search:${NC} the ${BOLD}Search${NC} tab uses Jackett. Add at least one"
+  echo -e "  indexer (e.g. ${BOLD}YTS${NC}) in the Jackett UI for results to appear (see above)."
+  echo
   local compose_cmd="$SUDO docker compose $COMPOSE_EXTRA"
   echo -e "  To upgrade:"
-  echo -e "    cd ${INSTALL_DIR}"
-  echo -e "    ${compose_cmd} pull && ${compose_cmd} up -d"
+  echo -e "    cd ${INSTALL_DIR} && ./install.sh upgrade"
   echo
   echo -e "  Other commands:"
   echo -e "    ${compose_cmd} logs -f"

@@ -14,6 +14,7 @@ import torrentRoutes from './routes/torrents.js';
 import fileRoutes from './routes/files.js';
 import streamRoutes from './routes/stream.js';
 import downloadRoutes from './routes/downloads.js';
+import searchRoutes from './routes/search.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -65,6 +66,7 @@ export function createApp(): Express {
   app.use('/api/torrents', apiLimiter, requireSession, torrentRoutes);
   app.use('/api/files', apiLimiter, requireSession, fileRoutes);
   app.use('/api/downloads', apiLimiter, requireSession, downloadRoutes);
+  app.use('/api/search', apiLimiter, requireSession, searchRoutes);
   app.use('/api/stream', requireSession, streamRoutes);
 
   // Serve the built SPA (when bundled into the image) with a history-API fallback.

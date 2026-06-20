@@ -44,6 +44,32 @@ export interface DiskUsage {
   available: number;
 }
 
+export type FileType = 'video' | 'audio' | 'software' | 'books' | 'other';
+
+// Opaque reference the backend needs to add a search result to qBittorrent.
+export type AddRef =
+  | { kind: 'magnet'; magnet: string }
+  | { kind: 'infohash'; infoHash: string; title: string }
+  | { kind: 'link'; link: string };
+
+export interface SearchResult {
+  title: string;
+  size: number;
+  seeders: number;
+  leechers: number;
+  publishDate: number; // epoch ms (0 if unknown)
+  tracker: string;
+  fileType: FileType;
+  ref: AddRef;
+}
+
+export interface SearchResponse {
+  results: SearchResult[];
+  warnings: string[];
+}
+
+export type SearchSortBy = 'relevance' | 'date' | 'seeders' | 'size';
+
 export type WsMessage =
   | { type: 'progress'; torrents: Torrent[]; disk: DiskUsage | null }
   | { type: 'pong' }
