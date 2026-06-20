@@ -286,6 +286,18 @@ configure_qbittorrent() {
   success "qBittorrent configured"
 }
 
+# ── Reclaim leaked disk space ─────────────────────────────────────────────────
+# When a file is deleted while qBittorrent still has it open, Linux keeps the
+# disk space allocated until that handle is closed. Restarting qBittorrent closes
+# every open handle, releasing the space held by previously-deleted files.
+reclaim_disk_space() {
+  info "Restarting qBittorrent to release handles on deleted files..."
+  $SUDO docker compose -f "$COMPOSE_FILE" restart qbittorrent
+  info "Waiting for qBittorrent to become healthy..."
+  wait_qbit_healthy
+  success "Disk space from deleted files reclaimed"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 main() {
   echo
@@ -319,6 +331,9 @@ main() {
   fi
 
   configure_qbittorrent
+
+  section "Reclaiming disk space"
+  reclaim_disk_space
 
   local domain username
   domain=$(grep '^DOMAIN=' .env | cut -d= -f2-)

@@ -142,6 +142,21 @@ export class QbitClient {
     );
   }
 
+  // Find the torrent + file index that owns a given file path (relative to the
+  // save root, i.e. qBittorrent's file "name"). Returns null if no torrent
+  // currently tracks that file.
+  async findFileLocation(filePath: string): Promise<{ hash: string; index: number } | null> {
+    const torrents = await this.getTorrents();
+    for (const t of torrents) {
+      const files = await this.getTorrentFiles(t.hash);
+      const match = files.find((f) => f.name === filePath);
+      if (match && match.index !== undefined) {
+        return { hash: t.hash, index: match.index };
+      }
+    }
+    return null;
+  }
+
   async deleteTorrent(hash: string, deleteFiles = false): Promise<void> {
     const body = new URLSearchParams({ hashes: hash, deleteFiles: String(deleteFiles) });
     await this.withAuth(() =>
