@@ -93,6 +93,16 @@ services:
       retries: 10
       start_period: 30s
 
+  # Solves Cloudflare challenges so Jackett can reach protected indexers (1337x, …).
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    environment:
+      - LOG_LEVEL=info
+      - TZ=UTC
+    expose:
+      - "8191"
+    restart: unless-stopped
+
 volumes:
   downloads:
   qbit_config:

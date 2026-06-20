@@ -488,9 +488,30 @@ wait_jackett_healthy() {
 # indexer-config API is gated by a UI session rather than the api key, so we
 # drive the cookie flow (no admin password → an empty POST enables a public
 # indexer). All best-effort; never fatal.
+# Point Jackett at FlareSolverr so Cloudflare-protected indexers (e.g. 1337x)
+# can be reached. Patches the config file directly (the api differs across
+# versions) and only when unset — idempotent.
+set_flaresolverr_url() {
+  local project vol
+  project=$(compose_project_name)
+  vol="${project}_jackett_config"
+  $SUDO docker volume inspect "$vol" >/dev/null 2>&1 || return 0
+  $SUDO docker run --rm -v "${vol}:/config" alpine \
+    grep -q '"FlareSolverrUrl": null' /config/Jackett/ServerConfig.json 2>/dev/null || return 0
+  info "Linking Jackett to FlareSolverr (Cloudflare bypass)..."
+  dc stop jackett >/dev/null 2>&1 || true
+  $SUDO docker run --rm -v "${vol}:/config" alpine \
+    sed -i 's#"FlareSolverrUrl": null#"FlareSolverrUrl": "http://flaresolverr:8191"#' \
+    /config/Jackett/ServerConfig.json 2>/dev/null || true
+  dc start jackett >/dev/null 2>&1 || true
+  wait_jackett_healthy || true
+}
+
 configure_jackett() {
   info "Waiting for Jackett (torrent search) to start..."
   wait_jackett_healthy || return 0
+
+  set_flaresolverr_url
 
   info "Enabling default indexers (YTS, The Pirate Bay, 1337x)..."
   local enabled
