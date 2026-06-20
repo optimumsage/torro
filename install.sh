@@ -107,15 +107,25 @@ setup_directory() {
 }
 
 # ── Download docker-compose.prod.yml ─────────────────────────────────────────
+# Always refresh from GitHub so upgrades pick up compose changes (new env vars,
+# healthchecks, volumes). This file is managed — local overrides belong in the
+# generated $MANUAL_TLS_FILE, never in here. Falls back to the existing copy if
+# the network is unavailable, and only fails hard when there's no copy at all.
 write_compose_file() {
-  if [[ -f "$COMPOSE_FILE" ]]; then
-    success "$COMPOSE_FILE already exists"
-    return
+  info "Fetching latest $COMPOSE_FILE..."
+  local tmp
+  tmp=$(mktemp)
+  if curl -fsSL "$GITHUB_RAW/$COMPOSE_FILE" -o "$tmp"; then
+    mv "$tmp" "$COMPOSE_FILE"
+    success "$COMPOSE_FILE up to date"
+  else
+    rm -f "$tmp"
+    if [[ -f "$COMPOSE_FILE" ]]; then
+      warn "Could not fetch latest $COMPOSE_FILE — keeping existing copy"
+    else
+      die "Failed to download $COMPOSE_FILE from $GITHUB_RAW"
+    fi
   fi
-  info "Downloading $COMPOSE_FILE..."
-  curl -fsSL "$GITHUB_RAW/$COMPOSE_FILE" -o "$COMPOSE_FILE" \
-    || die "Failed to download $COMPOSE_FILE from $GITHUB_RAW"
-  success "$COMPOSE_FILE downloaded"
 }
 
 # ── User inputs ───────────────────────────────────────────────────────────────
@@ -282,13 +292,36 @@ EOF
     success "Manual SSL certificates configured"
   fi
 
-  # Set COMPOSE_EXTRA: include manual-tls override if it exists (handles
-  # both fresh installs with manual certs and idempotent reinstalls).
+  set_compose_extra
+}
+
+# Include the manual-tls override if it exists (handles fresh installs with
+# manual certs, idempotent reinstalls, and upgrades).
+set_compose_extra() {
   if [[ -f "$MANUAL_TLS_FILE" ]]; then
     COMPOSE_EXTRA="-f $COMPOSE_FILE -f $MANUAL_TLS_FILE"
   else
     COMPOSE_EXTRA="-f $COMPOSE_FILE"
   fi
+}
+
+# ── Reclaim leaked disk space ─────────────────────────────────────────────────
+# A file deleted while a process still has it open keeps its disk space until
+# that handle closes. Recreating the torro container (done by `up -d` after a
+# pull) releases handles torro held; if qBittorrent is still holding deleted
+# files, restart it too so the space is actually freed.
+reclaim_disk_space() {
+  command -v lsof &>/dev/null || return 0
+  local pids
+  pids=$(sudo lsof -nP +L1 2>/dev/null | awk '/\/downloads/ {print $2}' | sort -u || true)
+  if [[ -z "$pids" ]]; then
+    success "No disk space held by deleted files"
+    return 0
+  fi
+  warn "Deleted files are still held open — restarting qBittorrent to reclaim space..."
+  dc restart qbittorrent
+  wait_qbit_healthy
+  success "Disk space from deleted files reclaimed"
 }
 
 # ── qBittorrent first-run ─────────────────────────────────────────────────────
@@ -404,6 +437,45 @@ configure_qbittorrent() {
   success "qBittorrent configured"
 }
 
+# ── Upgrade ───────────────────────────────────────────────────────────────────
+# `install.sh upgrade` — pull the latest image, refresh the compose file, restart
+# services, and reclaim disk space from previously-deleted files. No prompts; the
+# existing .env and certs are left untouched.
+do_upgrade() {
+  echo
+  echo -e "${BOLD}╔══════════════════════════════════════╗${NC}"
+  echo -e "${BOLD}║          Torro  Upgrade              ║${NC}"
+  echo -e "${BOLD}╚══════════════════════════════════════╝${NC}"
+
+  detect_docker_access
+
+  [[ -d "$INSTALL_DIR" ]] || die "No install found at $INSTALL_DIR. Run install.sh first."
+  cd "$INSTALL_DIR"
+  [[ -f .env ]] || die "No .env in $INSTALL_DIR — this doesn't look like a Torro install."
+
+  section "Updating compose file"
+  write_compose_file
+  set_compose_extra
+
+  section "Pulling images"
+  dc pull
+  success "Images pulled"
+
+  section "Restarting services"
+  dc up -d --remove-orphans
+  success "Services restarted on the latest image"
+
+  section "Reclaiming disk space"
+  reclaim_disk_space
+
+  local domain
+  domain=$(grep '^DOMAIN=' .env | cut -d= -f2-)
+  section "Done"
+  echo
+  echo -e "  ${GREEN}${BOLD}▸ https://${domain}${NC}"
+  echo
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 main() {
   echo
@@ -469,4 +541,13 @@ main() {
   echo
 }
 
-main "$@"
+case "${1:-install}" in
+  upgrade|update) do_upgrade ;;
+  install|"")     main "$@" ;;
+  -h|--help|help)
+    echo "Usage: install.sh [install|upgrade]"
+    echo "  install   Install Torro (default) — prompts for config on first run"
+    echo "  upgrade   Pull the latest image, restart, and reclaim disk space"
+    ;;
+  *) die "Unknown command: $1 (try: install.sh [install|upgrade])" ;;
+esac
